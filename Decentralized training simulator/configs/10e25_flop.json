@@ -1,0 +1,23 @@
+{
+  "model": {
+    "parameters": 144000000000,
+    "precision_bytes": 2
+  },
+  "hardware": {
+    "num_nodes": 72,
+    "flop_per_node": 32000000000000000,
+    "memory_per_node": 2473901162496,
+    "bandwidth_bps": 100000000,
+    "mfu": 0.4
+  },
+  "algorithm": {
+    "name": "DiLoCo",
+    "inner_steps": 128,
+    "compression_ratio": 16.0,
+    "streaming": true
+  },
+  "training": {
+    "total_tokens": 12000000000000,
+    "local_batch_tokens": 131072
+  }
+}
