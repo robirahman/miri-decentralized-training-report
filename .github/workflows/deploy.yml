@@ -22,13 +22,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: simulator-web/package.json
       - name: Install dependencies
-        run: |
-          cd simulator-web
-          npm install
+        working-directory: simulator-web
+        run: npm install
       - name: Build
-        run: |
-          cd simulator-web
-          npm run build
+        working-directory: simulator-web
+        run: npm run build
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact

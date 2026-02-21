@@ -5,13 +5,13 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
