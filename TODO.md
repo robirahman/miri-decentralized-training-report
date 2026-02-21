@@ -1,7 +1,7 @@
 # Project TODOs
 
 ## Simulator Extensions
-- [ ] **Pipeline Parallelism (PP) Logic:** Implement timing models for sharding models across nodes (required for models > 1T parameters).
+- [x] **Pipeline Parallelism (PP) Logic:** Implement timing models for sharding models across nodes (required for models > 1T parameters).
 - [ ] **Network Latency:** Add `latency_ms` parameters to model the "bubble" overhead in Pipeline Parallelism.
 - [ ] **Heterogeneity:** Model clusters with mismatched GPU types (e.g., some A100s mixed with GH200s).
 

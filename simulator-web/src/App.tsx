@@ -10,6 +10,7 @@ function App() {
   const [pflopsPerNode, setPflopsPerNode] = useState(32) // GH200 x16
   const [vramPerNode, setVramPerNode] = useState(2304) // 16x 144GB
   const [bandwidthMbps, setBandwidthMbps] = useState(100)
+  const [latencyMs, setLatencyMs] = useState(100) // Inter-node ping
   const [mfu, setMfu] = useState(0.4)
 
   // Algorithm Parameters
@@ -17,25 +18,21 @@ function App() {
   const [compression, setCompression] = useState(16)
   const [localBatch, setLocalBatch] = useState(131072)
   const [ppCompression, setPpCompression] = useState(10) // Activations are harder to compress
+  const [microBatches, setMicroBatches] = useState(8) // Standard for pipeline
 
   const [results, setResults] = useState<any>(null)
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, mfu, innerSteps, compression, localBatch, ppCompression])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches])
 
   const calculate = () => {
     // 1. Memory Analysis
-    // Standard training (Adam) takes ~16 bytes per param (Weights, Grads, Opt States)
-    // ZeRO-3 / FSDP can reduce this to ~2-4 bytes per param + sharded overhead
-    const bytesPerParam = 12 // Conservative middle ground with some optimization
-    const totalMemoryRequired = parameters * bytesPerParam
-    const totalMemoryAvailable = numNodes * vramPerNode * 1e9
-    
+    const bytesPerParam = 12 
     const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
-    const ppStages = Math.ceil(totalMemoryRequired / (vramPerNode * 1e9))
+    const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
     
-    // 2. Compute Time (Same for both)
+    // 2. Compute Time
     const flopsPerStep = 6 * parameters * localBatch
     const nodeComputePower = pflopsPerNode * 1e15 * mfu
     const computeTimePerStep = flopsPerStep / nodeComputePower
@@ -44,33 +41,37 @@ function App() {
     let mode = "Data Parallel (DiLoCo)"
     let commTimeSec = 0
     let computeBlockSec = 0
+    let latencyPenaltySec = 0
 
     if (!isSharded) {
       // --- DiLoCo Mode ---
-      const payloadBits = (parameters * 2 * 8) / compression // Weights sync
+      const payloadBits = (parameters * 2 * 8) / compression
       commTimeSec = (2 * payloadBits) / (bandwidthMbps * 1e6)
-      computeBlockSec = innerSteps * computeTimePerStep
+      latencyPenaltySec = latencyMs / 1000 // Negligible for bulk sync
       
-      const effectiveOuterTime = Math.max(computeBlockSec, commTimeSec)
+      computeBlockSec = innerSteps * computeTimePerStep
+      const effectiveOuterTime = Math.max(computeBlockSec, commTimeSec + latencyPenaltySec)
       const totalOuterSteps = (tokens / (localBatch * numNodes)) / innerSteps
       totalTimeSeconds = totalOuterSteps * effectiveOuterTime
     } else {
-      // --- Pipeline Parallel Mode (SWARM/Protocol style) ---
+      // --- Pipeline Parallel Mode ---
       mode = `Pipeline Parallel (${ppStages} stages)`
-      // Activations must be sent for EVERY step (or micro-batch)
-      // Activation Size ~= Batch * Hidden_Dim * Precision
-      // Heuristic for Hidden Dim: 0.004 * sqrt(Params)
       const hiddenDim = 0.004 * Math.sqrt(parameters)
       const activationBits = (localBatch * hiddenDim * 2 * 8) / ppCompression
       
-      // Each step must send activations forward and gradients backward
-      commTimeSec = (2 * activationBits) / (bandwidthMbps * 1e6)
-      computeBlockSec = computeTimePerStep
+      // Comm time for one micro-batch (rough estimate)
+      const commPerMicroSec = (2 * activationBits / microBatches) / (bandwidthMbps * 1e6)
+      const computePerMicroSec = computeTimePerStep / microBatches
+      const latencySec = latencyMs / 1000
+
+      // Pipeline formula: Time = (MicroBatches + Stages - 1) * (Compute + Comm + Latency)
+      const timePerStep = (microBatches + ppStages - 1) * (computePerMicroSec + commPerMicroSec + latencySec)
       
-      // Pipeline Parallel is extremely sensitive to latency
-      // We assume activations/grads are blocking per step
-      const timePerStep = computeBlockSec + commTimeSec
-      totalTimeSeconds = (tokens / (localBatch * numNodes)) * timePerStep
+      commTimeSec = (microBatches + ppStages - 1) * commPerMicroSec
+      latencyPenaltySec = (microBatches + ppStages - 1) * latencySec
+      computeBlockSec = (microBatches + ppStages - 1) * computePerMicroSec
+      
+      totalTimeSeconds = (tokens / (localBatch * (numNodes / ppStages))) * timePerStep
     }
 
     const days = totalTimeSeconds / (24 * 3600)
@@ -79,10 +80,11 @@ function App() {
       mode,
       computeStepSec: computeTimePerStep.toFixed(2),
       commSec: commTimeSec.toFixed(2),
+      latencySec: latencyPenaltySec.toFixed(2),
       computeBlockSec: computeBlockSec.toFixed(2),
       days: days.toFixed(2),
       isSharded,
-      bottleneck: commTimeSec > computeBlockSec ? "Network Bandwidth" : "Compute",
+      bottleneck: (commTimeSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
       feasibility: days < 365 ? "Feasible" : "Impractical (>1 year)"
     })
   }
@@ -116,12 +118,16 @@ function App() {
             <input type="range" min="8" max="5000" step="8" value={vramPerNode} onChange={(e) => setVramPerNode(Number(e.target.value))} />
           </div>
           <div className="input-group">
-            <label>Node PFLOPS: {pflopsPerNode}</label>
-            <input type="range" min="1" max="1000" step="1" value={pflopsPerNode} onChange={(e) => setPflopsPerNode(Number(e.target.value))} />
-          </div>
-          <div className="input-group">
             <label>WAN Bandwidth (Mbps): {bandwidthMbps}</label>
             <input type="range" min="1" max="10000" step="10" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(Number(e.target.value))} />
+          </div>
+          <div className="input-group">
+            <label>Network Latency (ms): {latencyMs}</label>
+            <input type="range" min="1" max="1000" step="10" value={latencyMs} onChange={(e) => setLatencyMs(Number(e.target.value))} />
+          </div>
+          <div className="input-group">
+            <label>Node PFLOPS: {pflopsPerNode}</label>
+            <input type="range" min="1" max="1000" step="1" value={pflopsPerNode} onChange={(e) => setPflopsPerNode(Number(e.target.value))} />
           </div>
         </section>
 
@@ -159,18 +165,21 @@ function App() {
               <div>
                 <p><strong>Bottleneck:</strong> {results.bottleneck}</p>
                 {results.isSharded ? (
-                  <p>Inter-stage Comm: {results.commSec}s / step</p>
+                  <>
+                    <p>Activation Sync: {results.commSec}s</p>
+                    <p>Latency Idle: {results.latencySec}s</p>
+                  </>
                 ) : (
-                  <p>Weight Sync: {results.commSec}s / outer step</p>
+                  <p>Weight Sync: {results.commSec}s</p>
                 )}
-                <p>Compute: {results.computeStepSec}s / step</p>
+                <p>Compute: {results.computeBlockSec}s</p>
               </div>
             </div>
             
             {results.isSharded && (
               <div style={{ marginTop: '10px', fontSize: '0.9em', color: '#aaa' }}>
-                * Model exceeds single-node VRAM. Simulator is assuming <strong>Pipeline Parallelism</strong> 
-                (e.g., SWARM or Protocol Models). This mode is highly sensitive to per-step network latency.
+                * Model exceeds single-node VRAM. Pipeline Parallelism is active. 
+                Network latency ({latencyMs}ms) adds idle time to every micro-batch handover.
               </div>
             )}
           </div>
