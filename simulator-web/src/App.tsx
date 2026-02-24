@@ -117,11 +117,19 @@ function App() {
     const computeTimePerStep = flopsPerStep / nodeComputePower
     
     // 3. Algorithmic Efficiency Penalty
-    // Heuristic: loss of effective compute scales with total inner steps between global syncs
-    const totalInnerSteps = useHierarchy ? innerSteps * regionalSteps : innerSteps
+    // Research (Wang et al. 2018) suggests hierarchy "anchors" drift.
+    // The effective H for penalty is less than total steps because regional syncs reset drift partially.
+    const effectiveH = useHierarchy 
+      ? innerSteps * Math.pow(regionalSteps, 0.5) // Hierarchical benefit (drift anchoring)
+      : innerSteps
+    
     // Alpha reduces slightly for larger models (more robust)
     const alpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
-    const algorithmicEfficiency = Math.max(0.5, 1 - alpha * Math.log10(totalInnerSteps))
+    const algorithmicEfficiency = Math.max(0.5, 1 - alpha * Math.log10(effectiveH))
+    
+    // 4. Straggler & Congestion Penalty
+    // Scaling to more nodes increases the chance of a P99 latency spike (straggler)
+    const getStragglerFactor = (n: number) => 1 + 0.05 * Math.log2(n)
     
     let totalTimeSeconds = 0
     let mode = "Data Parallel (DiLoCo)"
@@ -134,24 +142,27 @@ function App() {
       // --- Data Parallel Mode ---
       const payloadBits = (parameters * 2 * 8) / compression
       
-      // Global Sync (Every 'totalInnerSteps')
-      globalCommSec = (2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)
-      
       if (useHierarchy) {
         mode = "Hierarchical DiLoCo"
+        const numGroups = numNodes / nodesPerGroup
+        
         // Regional Sync (Every 'innerSteps')
-        regionalCommSec = (2 * payloadBits) / (regionalBandwidth * 1e6) + (regionalLatency / 1000)
+        regionalCommSec = ((2 * payloadBits) / (regionalBandwidth * 1e6) + (regionalLatency / 1000)) * getStragglerFactor(nodesPerGroup)
+        
+        // Global Sync (Every 'totalInnerSteps') - Only leaders communicate
+        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
         
         // One global cycle = H_global regional cycles
-        // One regional cycle = H_regional compute blocks
         const regionalCycleTime = Math.max(innerSteps * computeTimePerStep, regionalCommSec)
         const globalCycleTime = Math.max(regionalSteps * regionalCycleTime, globalCommSec)
         
         const totalGlobalCycles = (tokens / (localBatch * numNodes)) / (innerSteps * regionalSteps)
         totalTimeSeconds = totalGlobalCycles * globalCycleTime
-        computeBlockSec = totalInnerSteps * computeTimePerStep
+        computeBlockSec = (innerSteps * regionalSteps) * computeTimePerStep
       } else {
         computeBlockSec = innerSteps * computeTimePerStep
+        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numNodes)
+        
         const effectiveOuterTime = Math.max(computeBlockSec, globalCommSec)
         const totalOuterSteps = (tokens / (localBatch * numNodes)) / innerSteps
         totalTimeSeconds = totalOuterSteps * effectiveOuterTime
@@ -166,10 +177,12 @@ function App() {
       const computePerMicroSec = computeTimePerStep / microBatches
       const latencySec = latencyMs / 1000
 
-      const timePerStep = (microBatches + ppStages - 1) * (computePerMicroSec + commPerMicroSec + latencySec)
+      // Straggler penalty applies to the pipeline handoff as well
+      const straggler = getStragglerFactor(numNodes / ppStages)
+      const timePerStep = (microBatches + ppStages - 1) * (computePerMicroSec + (commPerMicroSec + latencySec) * straggler)
       
-      globalCommSec = (microBatches + ppStages - 1) * commPerMicroSec
-      latencyPenaltySec = (microBatches + ppStages - 1) * latencySec
+      globalCommSec = (microBatches + ppStages - 1) * commPerMicroSec * straggler
+      latencyPenaltySec = (microBatches + ppStages - 1) * latencySec * straggler
       computeBlockSec = (microBatches + ppStages - 1) * computePerMicroSec
       
       totalTimeSeconds = (tokens / (localBatch * (numNodes / ppStages))) * timePerStep
