@@ -26,16 +26,37 @@ function App() {
   const [localBatch, setLocalBatch] = useState(131072)
   const [ppCompression, setPpCompression] = useState(10)
   const [microBatches, setMicroBatches] = useState(8)
+  const [precision, setPrecision] = useState('FP16')
+
+  // The Longest Training Run Calculator
+  const [showLongestRunCalc, setShowLongestRunCalc] = useState(false)
+  const [hwGrowth, setHwGrowth] = useState(0.37)
+  const [swGrowth, setSwGrowth] = useState(2.0)
+  const [investGrowth, setInvestGrowth] = useState(2.5)
 
   const [results, setResults] = useState<any>(null)
 
   useEffect(() => {
+    // Sync compression based on precision
+    if (precision === 'FP8') {
+      setCompression(2)
+      setPpCompression(2)
+    } else if (precision === 'FP4') {
+      setCompression(4)
+      setPpCompression(4)
+    } else {
+      setCompression(1)
+      setPpCompression(1)
+    }
+  }, [precision])
+
+  useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth])
 
   const calculate = () => {
     // 1. Memory Analysis
-    const bytesPerParam = 12 
+    const bytesPerParam = precision === 'FP16' ? 12 : precision === 'FP8' ? 8 : 6
     const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
     const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
     
@@ -106,6 +127,20 @@ function App() {
     // Effective compute time accounts for algorithmic penalty
     const totalTimeDays = totalTimeSeconds / (24 * 3600)
     const effectiveDays = totalTimeDays / algorithmicEfficiency
+    const effectiveSeconds = effectiveDays * 24 * 3600
+
+    // Global Utilization Metrics (End-to-End)
+    // Theoretical FLOPs = 6 * parameters * tokens
+    // Hardware Max FLOPs = numNodes * pflopsPerNode * 1e15 * effectiveSeconds
+    const theoreticalFlops = 6 * parameters * (tokens)
+    const hardwareMaxFlops = numNodes * (pflopsPerNode * 1e15) * effectiveSeconds
+    const globalMfu = (theoreticalFlops / hardwareMaxFlops)
+    const globalHfu = globalMfu / 0.8 // MFU is ~80% of HFU per research
+
+    // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
+    // Formula: L = 1 / (gH + gS + gI)
+    const combinedGrowth = hwGrowth + swGrowth + investGrowth
+    const maxDays = (1 / combinedGrowth) * 365
 
     setResults({
       mode,
@@ -117,9 +152,12 @@ function App() {
       days: effectiveDays.toFixed(2),
       rawDays: totalTimeDays.toFixed(2),
       efficiency: (algorithmicEfficiency * 100).toFixed(1),
+      globalMfu: (globalMfu * 100).toFixed(1),
+      globalHfu: (globalHfu * 100).toFixed(1),
       isSharded,
+      maxDays: maxDays.toFixed(0),
       bottleneck: (globalCommSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
-      feasibility: effectiveDays < 365 ? "Feasible" : "Impractical (>1 year)"
+      feasibility: effectiveDays < maxDays ? "Feasible" : `Impractical (>${maxDays.toFixed(0)} days)`
     })
   }
 
@@ -170,6 +208,16 @@ function App() {
             <input type="range" min="1" max="1000" step="1" value={pflopsPerNode} onChange={(e) => setPflopsPerNode(Number(e.target.value))} />
             <span>{pflopsPerNode}</span>
           </div>
+          <div className="input-group">
+            <label>Base MFU (%):</label>
+            <input type="range" min="5" max="80" step="1" value={mfu * 100} onChange={(e) => setMfu(Number(e.target.value) / 100)} />
+            <span>{(mfu * 100).toFixed(0)}%</span>
+          </div>
+          {mfu > 0.6 && (
+            <p style={{ color: '#ffcc00', fontSize: '0.8em', marginTop: '5px' }}>
+              ⚠️ MFU > 60% is rare in practice. Most large-scale jobs peak at 40-50%.
+            </p>
+          )}
         </section>
 
         <section>
@@ -201,6 +249,15 @@ function App() {
         <section>
           <h3>Algorithm Settings</h3>
           <div className="input-group">
+            <label>Precision:</label>
+            <select value={precision} onChange={(e) => setPrecision(e.target.value)} style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}>
+              <option value="FP16">FP16 / BF16 (2 bytes)</option>
+              <option value="FP8">FP8 (1 byte)</option>
+              <option value="FP4">FP4 (0.5 byte)</option>
+            </select>
+            <span>{precision}</span>
+          </div>
+          <div className="input-group">
             <label>Inner Steps (Local):</label>
             <input type="range" min="1" max="1000" step="1" value={innerSteps} onChange={(e) => setInnerSteps(Number(e.target.value))} />
             <span>{innerSteps}</span>
@@ -215,6 +272,37 @@ function App() {
             <input type="range" min="1" max="100" step="1" value={ppCompression} onChange={(e) => setPpCompression(Number(e.target.value))} />
             <span>{ppCompression}x</span>
           </div>
+        </section>
+
+        <section>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowLongestRunCalc(!showLongestRunCalc)}>
+            <h3>Max Run Duration Calculator {showLongestRunCalc ? '▼' : '▶'}</h3>
+          </div>
+          <p style={{ fontSize: '0.8em', color: '#aaa', marginTop: '-10px' }}>
+            Based on Epoch's "The Longest Training Run" research.
+          </p>
+          {showLongestRunCalc && (
+            <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px', marginBottom: '20px' }}>
+              <div className="input-group">
+                <label>HW Growth/yr (%):</label>
+                <input type="range" min="0" max="1" step="0.01" value={hwGrowth} onChange={(e) => setHwGrowth(Number(e.target.value))} />
+                <span>{(hwGrowth * 100).toFixed(0)}%</span>
+              </div>
+              <div className="input-group">
+                <label>SW Growth/yr (%):</label>
+                <input type="range" min="0" max="5" step="0.1" value={swGrowth} onChange={(e) => setSwGrowth(Number(e.target.value))} />
+                <span>{(swGrowth * 100).toFixed(0)}%</span>
+              </div>
+              <div className="input-group">
+                <label>Invest Growth/yr (%):</label>
+                <input type="range" min="0" max="10" step="0.1" value={investGrowth} onChange={(e) => setInvestGrowth(Number(e.target.value))} />
+                <span>{(investGrowth * 100).toFixed(0)}%</span>
+              </div>
+              <p style={{ fontSize: '0.75em', color: '#888', marginTop: '10px' }}>
+                * High growth rates suggest shorter optimal runs, as delaying for better tech/budget becomes more attractive.
+              </p>
+            </div>
+          )}
         </section>
 
         {results && (
@@ -232,6 +320,15 @@ function App() {
                 <h1 style={{ color: results.days < 365 ? '#4caf50' : '#ff4444', margin: 0 }}>{results.days} Days</h1>
                 <p>{results.feasibility}</p>
                 <p style={{ fontSize: '0.8em', color: '#aaa' }}>Includes {results.efficiency}% algorithmic efficiency</p>
+                <p style={{ fontSize: '0.8em', color: '#aaa' }}>
+                  Global MFU: <span style={{ color: results.globalMfu < 20 ? '#ff4444' : '#aaa' }}>{results.globalMfu}%</span> | 
+                  HFU: {results.globalHfu}%
+                </p>
+                {results.globalMfu < 20 && (
+                  <p style={{ fontSize: '0.7em', color: '#ff4444' }}>
+                    * Inefficient run: Communication overhead or algorithmic penalty is dominating.
+                  </p>
+                )}
               </div>
               <div>
                 <p><strong>Bottleneck:</strong> {results.bottleneck}</p>
