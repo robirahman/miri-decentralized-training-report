@@ -222,13 +222,29 @@ function App() {
           <h3>Model & Dataset</h3>
           <div className="input-group">
             <label>Parameters (B):</label>
-            <input type="range" min="1" max="15000" step="10" value={parameters / 1e9} onChange={(e) => setParameters(Number(e.target.value) * 1e9)} />
-            <span>{parameters / 1e9}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="15000" 
+              step="10" 
+              value={parameters / 1e9} 
+              onChange={(e) => setParameters(Number(e.target.value) * 1e9)} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>B</span>
           </div>
           <div className="input-group">
             <label>Tokens (T):</label>
-            <input type="range" min="0.1" max="100" step="0.1" value={tokens / 1e12} onChange={(e) => setTokens(Number(e.target.value) * 1e12)} />
-            <span>{tokens / 1e12}</span>
+            <input 
+              type="number" 
+              min="0.1" 
+              max="100" 
+              step="0.1" 
+              value={tokens / 1e12} 
+              onChange={(e) => setTokens(Number(e.target.value) * 1e12)} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>T</span>
           </div>
         </section>
 
@@ -236,33 +252,81 @@ function App() {
           <h3>Infrastructure (Global)</h3>
           <div className="input-group">
             <label>Number of Nodes:</label>
-            <input type="range" min="1" max="5000" step="1" value={numNodes} onChange={(e) => setNumNodes(Number(e.target.value))} />
-            <span>{numNodes}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="5000" 
+              step="1" 
+              value={numNodes} 
+              onChange={(e) => setNumNodes(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>Nodes</span>
           </div>
           <div className="input-group">
             <label>WAN Bandwidth (Mbps):</label>
-            <input type="range" min="1" max="10000" step="10" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(Number(e.target.value))} />
-            <span>{bandwidthMbps}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="10000" 
+              step="10" 
+              value={bandwidthMbps} 
+              onChange={(e) => setBandwidthMbps(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>Mbps</span>
           </div>
           <div className="input-group">
             <label>WAN Latency (ms):</label>
-            <input type="range" min="1" max="1000" step="10" value={latencyMs} onChange={(e) => setLatencyMs(Number(e.target.value))} />
-            <span>{latencyMs}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="1000" 
+              step="10" 
+              value={latencyMs} 
+              onChange={(e) => setLatencyMs(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>ms</span>
           </div>
           <div className="input-group">
             <label>Node VRAM (GB):</label>
-            <input type="range" min="8" max="5000" step="8" value={vramPerNode} onChange={(e) => setVramPerNode(Number(e.target.value))} />
-            <span>{vramPerNode}</span>
+            <input 
+              type="number" 
+              min="8" 
+              max="5000" 
+              step="8" 
+              value={vramPerNode} 
+              onChange={(e) => setVramPerNode(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>GB</span>
           </div>
           <div className="input-group">
             <label>Node PFLOPS:</label>
-            <input type="range" min="1" max="1000" step="1" value={pflopsPerNode} onChange={(e) => setPflopsPerNode(Number(e.target.value))} />
-            <span>{pflopsPerNode}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="1000" 
+              step="1" 
+              value={pflopsPerNode} 
+              onChange={(e) => setPflopsPerNode(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>PFLOPS</span>
           </div>
           <div className="input-group">
             <label>Base MFU (%):</label>
-            <input type="range" min="5" max="80" step="1" value={mfu * 100} onChange={(e) => setMfu(Number(e.target.value) / 100)} />
-            <span>{(mfu * 100).toFixed(0)}%</span>
+            <input 
+              type="number" 
+              min="5" 
+              max="80" 
+              step="1" 
+              value={mfu * 100} 
+              onChange={(e) => setMfu(Number(e.target.value) / 100)} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>%</span>
           </div>
           {mfu > 0.6 && (
             <p style={{ color: '#ffcc00', fontSize: '0.8em', marginTop: '5px' }}>
@@ -279,19 +343,56 @@ function App() {
           {useHierarchy && (
             <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px' }}>
               <div className="input-group">
+                <label>Group Nodes:</label>
+                <input 
+                  type="number" 
+                  min="2" 
+                  max={numNodes} 
+                  step="1" 
+                  value={nodesPerGroup} 
+                  onChange={(e) => setNodesPerGroup(Number(e.target.value))} 
+                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+                />
+                <span>Nodes</span>
+              </div>
+              <div className="input-group">
                 <label>Regional Bandwidth (Mbps):</label>
-                <input type="range" min="100" max="100000" step="100" value={regionalBandwidth} onChange={(e) => setRegionalBandwidth(Number(e.target.value))} />
-                <span>{regionalBandwidth}</span>
+                <input 
+                  type="number" 
+                  min="100" 
+                  max="100000" 
+                  step="100" 
+                  value={regionalBandwidth} 
+                  onChange={(e) => setRegionalBandwidth(Number(e.target.value))} 
+                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+                />
+                <span>Mbps</span>
               </div>
               <div className="input-group">
                 <label>Regional Latency (ms):</label>
-                <input type="range" min="1" max="100" step="1" value={regionalLatency} onChange={(e) => setRegionalLatency(Number(e.target.value))} />
-                <span>{regionalLatency}</span>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max="100" 
+                  step="1" 
+                  value={regionalLatency} 
+                  onChange={(e) => setRegionalLatency(Number(e.target.value))} 
+                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+                />
+                <span>ms</span>
               </div>
               <div className="input-group">
                 <label>Regional Sync Steps:</label>
-                <input type="range" min="1" max="100" step="1" value={regionalSteps} onChange={(e) => setRegionalSteps(Number(e.target.value))} />
-                <span>{regionalSteps}</span>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max="100" 
+                  step="1" 
+                  value={regionalSteps} 
+                  onChange={(e) => setRegionalSteps(Number(e.target.value))} 
+                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+                />
+                <span>Steps</span>
               </div>
             </div>
           )}
@@ -310,18 +411,42 @@ function App() {
           </div>
           <div className="input-group">
             <label>Inner Steps (Local):</label>
-            <input type="range" min="1" max="1000" step="1" value={innerSteps} onChange={(e) => setInnerSteps(Number(e.target.value))} />
-            <span>{innerSteps}</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="1000" 
+              step="1" 
+              value={innerSteps} 
+              onChange={(e) => setInnerSteps(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>Steps</span>
           </div>
           <div className="input-group">
             <label>Weight Compression:</label>
-            <input type="range" min="1" max="100" step="1" value={compression} onChange={(e) => setCompression(Number(e.target.value))} />
-            <span>{compression}x</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="100" 
+              step="1" 
+              value={compression} 
+              onChange={(e) => setCompression(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>x</span>
           </div>
           <div className="input-group">
             <label>Activation Compression:</label>
-            <input type="range" min="1" max="100" step="1" value={ppCompression} onChange={(e) => setPpCompression(Number(e.target.value))} />
-            <span>{ppCompression}x</span>
+            <input 
+              type="number" 
+              min="1" 
+              max="100" 
+              step="1" 
+              value={ppCompression} 
+              onChange={(e) => setPpCompression(Number(e.target.value))} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            />
+            <span>x</span>
           </div>
         </section>
 
