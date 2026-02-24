@@ -132,36 +132,43 @@ function App() {
         <section>
           <h3>Model & Dataset</h3>
           <div className="input-group">
-            <label>Parameters (B): {parameters / 1e9}</label>
+            <label>Parameters (B):</label>
             <input type="range" min="1" max="15000" step="10" value={parameters / 1e9} onChange={(e) => setParameters(Number(e.target.value) * 1e9)} />
+            <span>{parameters / 1e9}</span>
           </div>
           <div className="input-group">
-            <label>Tokens (T): {tokens / 1e12}</label>
+            <label>Tokens (T):</label>
             <input type="range" min="0.1" max="100" step="0.1" value={tokens / 1e12} onChange={(e) => setTokens(Number(e.target.value) * 1e12)} />
+            <span>{tokens / 1e12}</span>
           </div>
         </section>
 
         <section>
           <h3>Infrastructure (Global)</h3>
           <div className="input-group">
-            <label>Number of Nodes: {numNodes}</label>
+            <label>Number of Nodes:</label>
             <input type="range" min="1" max="5000" step="1" value={numNodes} onChange={(e) => setNumNodes(Number(e.target.value))} />
+            <span>{numNodes}</span>
           </div>
           <div className="input-group">
-            <label>WAN Bandwidth (Mbps): {bandwidthMbps}</label>
+            <label>WAN Bandwidth (Mbps):</label>
             <input type="range" min="1" max="10000" step="10" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(Number(e.target.value))} />
+            <span>{bandwidthMbps}</span>
           </div>
           <div className="input-group">
-            <label>WAN Latency (ms): {latencyMs}</label>
+            <label>WAN Latency (ms):</label>
             <input type="range" min="1" max="1000" step="10" value={latencyMs} onChange={(e) => setLatencyMs(Number(e.target.value))} />
+            <span>{latencyMs}</span>
           </div>
           <div className="input-group">
-            <label>Node VRAM (GB): {vramPerNode}</label>
+            <label>Node VRAM (GB):</label>
             <input type="range" min="8" max="5000" step="8" value={vramPerNode} onChange={(e) => setVramPerNode(Number(e.target.value))} />
+            <span>{vramPerNode}</span>
           </div>
           <div className="input-group">
-            <label>Node PFLOPS: {pflopsPerNode}</label>
+            <label>Node PFLOPS:</label>
             <input type="range" min="1" max="1000" step="1" value={pflopsPerNode} onChange={(e) => setPflopsPerNode(Number(e.target.value))} />
+            <span>{pflopsPerNode}</span>
           </div>
         </section>
 
@@ -173,16 +180,19 @@ function App() {
           {useHierarchy && (
             <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px' }}>
               <div className="input-group">
-                <label>Regional Bandwidth (Mbps): {regionalBandwidth}</label>
+                <label>Regional Bandwidth (Mbps):</label>
                 <input type="range" min="100" max="100000" step="100" value={regionalBandwidth} onChange={(e) => setRegionalBandwidth(Number(e.target.value))} />
+                <span>{regionalBandwidth}</span>
               </div>
               <div className="input-group">
-                <label>Regional Latency (ms): {regionalLatency}</label>
+                <label>Regional Latency (ms):</label>
                 <input type="range" min="1" max="100" step="1" value={regionalLatency} onChange={(e) => setRegionalLatency(Number(e.target.value))} />
+                <span>{regionalLatency}</span>
               </div>
               <div className="input-group">
-                <label>Regional Sync Steps: {regionalSteps}</label>
+                <label>Regional Sync Steps:</label>
                 <input type="range" min="1" max="100" step="1" value={regionalSteps} onChange={(e) => setRegionalSteps(Number(e.target.value))} />
+                <span>{regionalSteps}</span>
               </div>
             </div>
           )}
@@ -191,16 +201,19 @@ function App() {
         <section>
           <h3>Algorithm Settings</h3>
           <div className="input-group">
-            <label>Inner Steps (Local): {innerSteps}</label>
+            <label>Inner Steps (Local):</label>
             <input type="range" min="1" max="1000" step="1" value={innerSteps} onChange={(e) => setInnerSteps(Number(e.target.value))} />
+            <span>{innerSteps}</span>
           </div>
           <div className="input-group">
-            <label>Weight Compression: {compression}x</label>
+            <label>Weight Compression:</label>
             <input type="range" min="1" max="100" step="1" value={compression} onChange={(e) => setCompression(Number(e.target.value))} />
+            <span>{compression}x</span>
           </div>
           <div className="input-group">
-            <label>Activation Compression: {ppCompression}x</label>
+            <label>Activation Compression:</label>
             <input type="range" min="1" max="100" step="1" value={ppCompression} onChange={(e) => setPpCompression(Number(e.target.value))} />
+            <span>{ppCompression}x</span>
           </div>
         </section>
 
@@ -229,7 +242,7 @@ function App() {
             </div>
             
             {results.isSharded && (
-              <div style={{ marginTop: '10px', fontSize: '0.9em', color: '#aaa' }}>
+              <div style={{ marginTop: '10px', fontSize: '0.9em', color: '#aaa', maxWidth: '100%', overflowWrap: 'break-word' }}>
                 * Model exceeds single-node VRAM. Pipeline Parallelism is active. 
                 Network latency adds idle time to every micro-batch handover.
               </div>
