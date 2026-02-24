@@ -1,5 +1,56 @@
 import { useState, useEffect } from 'react'
 
+const GrowthInput = ({ label, value, onChange }: { label: string, value: number, onChange: (val: number) => void }) => {
+  const multiple = Math.pow(10, value);
+  const percent = (multiple - 1) * 100;
+
+  const inputStyle = {
+    background: '#1a1a1a',
+    color: 'white',
+    border: '1px solid #646cff',
+    padding: '5px',
+    borderRadius: '4px',
+    width: '100%',
+    boxSizing: 'border-box' as const
+  };
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr 1fr', gap: '10px', alignItems: 'end', marginBottom: '15px' }}>
+      <label style={{ paddingBottom: '8px', fontSize: '0.9em' }}>{label}</label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <span style={{ fontSize: '0.7em', color: '#aaa' }}>OOM/yr</span>
+        <input 
+          type="number" 
+          step="0.01" 
+          value={parseFloat(value.toFixed(3))} 
+          onChange={(e) => onChange(Number(e.target.value))} 
+          style={inputStyle} 
+        />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <span style={{ fontSize: '0.7em', color: '#aaa' }}>%/yr</span>
+        <input 
+          type="number" 
+          step="1" 
+          value={Math.round(percent)} 
+          onChange={(e) => onChange(Math.log10(Number(e.target.value) / 100 + 1))} 
+          style={inputStyle} 
+        />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <span style={{ fontSize: '0.7em', color: '#aaa' }}>Multiple</span>
+        <input 
+          type="number" 
+          step="0.1" 
+          value={parseFloat(multiple.toFixed(2))} 
+          onChange={(e) => onChange(Math.log10(Number(e.target.value)))} 
+          style={inputStyle} 
+        />
+      </div>
+    </div>
+  );
+};
+
 function App() {
   // Model Parameters
   const [parameters, setParameters] = useState(144e9) // 144B
@@ -282,24 +333,14 @@ function App() {
             Based on Epoch's "The Longest Training Run" research.
           </p>
           {showLongestRunCalc && (
-            <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px', marginBottom: '20px' }}>
-              <div className="input-group">
-                <label>HW Growth/yr (%):</label>
-                <input type="range" min="0" max="1" step="0.01" value={hwGrowth} onChange={(e) => setHwGrowth(Number(e.target.value))} />
-                <span>{(hwGrowth * 100).toFixed(0)}%</span>
-              </div>
-              <div className="input-group">
-                <label>SW Growth/yr (%):</label>
-                <input type="range" min="0" max="5" step="0.1" value={swGrowth} onChange={(e) => setSwGrowth(Number(e.target.value))} />
-                <span>{(swGrowth * 100).toFixed(0)}%</span>
-              </div>
-              <div className="input-group">
-                <label>Invest Growth/yr (%):</label>
-                <input type="range" min="0" max="10" step="0.1" value={investGrowth} onChange={(e) => setInvestGrowth(Number(e.target.value))} />
-                <span>{(investGrowth * 100).toFixed(0)}%</span>
-              </div>
+            <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px', marginBottom: '20px', marginTop: '10px' }}>
+              <GrowthInput label="HW Growth" value={hwGrowth} onChange={setHwGrowth} />
+              <GrowthInput label="SW Growth" value={swGrowth} onChange={setSwGrowth} />
+              <GrowthInput label="Invest Growth" value={investGrowth} onChange={setInvestGrowth} />
+              
               <p style={{ fontSize: '0.75em', color: '#888', marginTop: '10px' }}>
                 * High growth rates suggest shorter optimal runs, as delaying for better tech/budget becomes more attractive.
+                Calculated as L = 1 / Σ(OOM/yr).
               </p>
             </div>
           )}
