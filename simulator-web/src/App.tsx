@@ -215,7 +215,7 @@ function App() {
           </div>
           {mfu > 0.6 && (
             <p style={{ color: '#ffcc00', fontSize: '0.8em', marginTop: '5px' }}>
-              ⚠️ MFU > 60% is rare in practice. Most large-scale jobs peak at 40-50%.
+              ⚠️ MFU &gt; 60% is rare in practice. Most large-scale jobs peak at 40-50%.
             </p>
           )}
         </section>
