@@ -79,6 +79,9 @@ function App() {
   const [microBatches, setMicroBatches] = useState(8)
   const [precision, setPrecision] = useState('FP16')
 
+  // Straggler Mitigation
+  const [stragglerStrategy, setStragglerStrategy] = useState('none') // none, threshold, redundancy
+
   // The Longest Training Run Calculator
   const [showLongestRunCalc, setShowLongestRunCalc] = useState(false)
   const [hwGrowth, setHwGrowth] = useState(0.37)
@@ -103,7 +106,7 @@ function App() {
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy])
 
   const calculate = () => {
     // 1. Memory Analysis
@@ -111,25 +114,35 @@ function App() {
     const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
     const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
     
-    // 2. Compute Time
+    // 2. Resource Adjustments (e.g. Redundancy / Backup Workers)
+    // Redundancy assumes 10% of nodes are purely backups (M/1.1)
+    const effectiveNodes = stragglerStrategy === 'redundancy' ? numNodes / 1.1 : numNodes
+
+    // 3. Compute Time
     const flopsPerStep = 6 * parameters * localBatch
     const nodeComputePower = pflopsPerNode * 1e15 * mfu
     const computeTimePerStep = flopsPerStep / nodeComputePower
     
-    // 3. Algorithmic Efficiency Penalty
+    // 4. Algorithmic Efficiency Penalty
     // Research (Wang et al. 2018) suggests hierarchy "anchors" drift.
-    // The effective H for penalty is less than total steps because regional syncs reset drift partially.
     const effectiveH = useHierarchy 
       ? innerSteps * Math.pow(regionalSteps, 0.5) // Hierarchical benefit (drift anchoring)
       : innerSteps
     
     // Alpha reduces slightly for larger models (more robust)
-    const alpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
-    const algorithmicEfficiency = Math.max(0.5, 1 - alpha * Math.log10(effectiveH))
+    const baseAlpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
+    // Strategy: Threshold aggregation is faster but less efficient per token (staleness)
+    const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
+    const algorithmicEfficiency = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
     
-    // 4. Straggler & Congestion Penalty
-    // Scaling to more nodes increases the chance of a P99 latency spike (straggler)
-    const getStragglerFactor = (n: number) => 1 + 0.05 * Math.log2(n)
+    // 5. Straggler & Congestion Penalty
+    // Strategy: threshold/redundancy can reduce the penalty by clipping the tail
+    const getStragglerFactor = (n: number) => {
+      const base = 1 + 0.05 * Math.log2(n)
+      if (stragglerStrategy === 'threshold') return 1.0 // Clipped entirely
+      if (stragglerStrategy === 'redundancy') return 1 + (base - 1) * 0.3 // Significantly reduced
+      return base
+    }
     
     let totalTimeSeconds = 0
     let mode = "Data Parallel (DiLoCo)"
@@ -144,7 +157,7 @@ function App() {
       
       if (useHierarchy) {
         mode = "Hierarchical DiLoCo"
-        const numGroups = numNodes / nodesPerGroup
+        const numGroups = effectiveNodes / nodesPerGroup
         
         // Regional Sync (Every 'innerSteps')
         regionalCommSec = ((2 * payloadBits) / (regionalBandwidth * 1e6) + (regionalLatency / 1000)) * getStragglerFactor(nodesPerGroup)
@@ -156,15 +169,15 @@ function App() {
         const regionalCycleTime = Math.max(innerSteps * computeTimePerStep, regionalCommSec)
         const globalCycleTime = Math.max(regionalSteps * regionalCycleTime, globalCommSec)
         
-        const totalGlobalCycles = (tokens / (localBatch * numNodes)) / (innerSteps * regionalSteps)
+        const totalGlobalCycles = (tokens / (localBatch * effectiveNodes)) / (innerSteps * regionalSteps)
         totalTimeSeconds = totalGlobalCycles * globalCycleTime
         computeBlockSec = (innerSteps * regionalSteps) * computeTimePerStep
       } else {
         computeBlockSec = innerSteps * computeTimePerStep
-        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numNodes)
+        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(effectiveNodes)
         
         const effectiveOuterTime = Math.max(computeBlockSec, globalCommSec)
-        const totalOuterSteps = (tokens / (localBatch * numNodes)) / innerSteps
+        const totalOuterSteps = (tokens / (localBatch * effectiveNodes)) / innerSteps
         totalTimeSeconds = totalOuterSteps * effectiveOuterTime
       }
     } else {
@@ -178,14 +191,14 @@ function App() {
       const latencySec = latencyMs / 1000
 
       // Straggler penalty applies to the pipeline handoff as well
-      const straggler = getStragglerFactor(numNodes / ppStages)
+      const straggler = getStragglerFactor(effectiveNodes / ppStages)
       const timePerStep = (microBatches + ppStages - 1) * (computePerMicroSec + (commPerMicroSec + latencySec) * straggler)
       
       globalCommSec = (microBatches + ppStages - 1) * commPerMicroSec * straggler
       latencyPenaltySec = (microBatches + ppStages - 1) * latencySec * straggler
       computeBlockSec = (microBatches + ppStages - 1) * computePerMicroSec
       
-      totalTimeSeconds = (tokens / (localBatch * (numNodes / ppStages))) * timePerStep
+      totalTimeSeconds = (tokens / (localBatch * (effectiveNodes / ppStages))) * timePerStep
     }
 
     // Effective compute time accounts for algorithmic penalty
@@ -460,6 +473,19 @@ function App() {
               style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>x</span>
+          </div>
+          <div className="input-group">
+            <label>Straggler Mitigation:</label>
+            <select 
+              value={stragglerStrategy} 
+              onChange={(e) => setStragglerStrategy(e.target.value)} 
+              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
+            >
+              <option value="none">None (Blocking)</option>
+              <option value="threshold">Threshold (90% cut-off)</option>
+              <option value="redundancy">Backup Workers (10% extra)</option>
+            </select>
+            <span style={{ fontSize: '0.7em', color: '#aaa' }}>Strategy</span>
           </div>
         </section>
 
