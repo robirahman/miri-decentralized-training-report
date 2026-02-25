@@ -67,6 +67,10 @@ function App() {
   // Model Parameters
   const [parameters, setParameters] = useState(144e9) // 144B
   const [tokens, setTokens] = useState(12e12) // 12T
+  const [isMoE, setIsMoE] = useState(false)
+  const [activeParams, setActiveParams] = useState(24e9) // 24B
+  const [moeLayers, setMoeLayers] = useState(32)
+  const [expertParallelism, setExpertParallelism] = useState('none') // none, regional, global
   
   // Hardware Parameters
   const [numNodes, setNumNodes] = useState(72)
@@ -119,17 +123,69 @@ function App() {
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism])
 
   const calculate = () => {
-    // ... logic remains same ...
-    // ...
+    // 1. Memory Analysis
+    const bytesPerParam = precision === 'FP16' ? 12 : precision === 'FP8' ? 8 : 6
+    // Memory always depends on TOTAL parameters
+    const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
+    const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
+    
+    // 2. Resource Adjustments (e.g. Redundancy / Backup Workers)
+    const effectiveNodes = stragglerStrategy === 'redundancy' ? numNodes / 1.1 : numNodes
+
+    // 3. Compute Time
+    // Compute depends on ACTIVE parameters for MoE
+    const computeParams = isMoE ? activeParams : parameters
+    const flopsPerStep = 6 * computeParams * localBatch
+    const nodeComputePower = pflopsPerNode * 1e15 * mfu
+    
+    // Expert Parallelism (All-to-All) Latency Penalty
+    let epLatencySec = 0
+    if (isMoE) {
+      if (expertParallelism === 'global') {
+        epLatencySec = (latencyMs / 1000) * 2 * moeLayers
+      } else if (expertParallelism === 'regional' && useHierarchy) {
+        epLatencySec = (regionalLatency / 1000) * 2 * moeLayers
+      }
+    }
+
+    const computeTimePerStep = (flopsPerStep / nodeComputePower) + epLatencySec
+    
+    // 4. Algorithmic Efficiency Penalty
+    // Research (Wang et al. 2018) suggests hierarchy "anchors" drift.
+    const effectiveH = useHierarchy 
+      ? innerSteps * Math.pow(regionalSteps, 0.5) // Hierarchical benefit (drift anchoring)
+      : innerSteps
+    
+    // Alpha reduces slightly for larger models (more robust)
+    const baseAlpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
+    // Strategy: Threshold aggregation is faster but less efficient per token (staleness)
+    const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
+    const algorithmicEfficiency = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
+    
+    // 5. Straggler & Congestion Penalty
+    const getStragglerFactor = (n: number) => {
+      const base = 1 + 0.05 * Math.log2(n)
+      if (stragglerStrategy === 'threshold') return 1.0 // Clipped entirely
+      if (stragglerStrategy === 'redundancy') return 1 + (base - 1) * 0.3 // Significantly reduced
+      return base
+    }
+    
+    let totalTimeSeconds = 0
+    let mode = isMoE ? "MoE" : "Data Parallel (DiLoCo)"
+    let globalCommSec = 0
+    let regionalCommSec = 0
+    let computeBlockSec = 0
+    let latencyPenaltySec = 0
+
     if (!isSharded) {
-      // --- Data Parallel Mode ---
+      // --- Data Parallel / EP Mode ---
       const payloadBits = (parameters * 2 * 8) / compression
       
       if (useHierarchy) {
-        mode = "Hierarchical DiLoCo"
+        mode = isMoE ? "Hierarchical MoE" : "Hierarchical DiLoCo"
         const numGroups = effectiveNodes / nodesPerGroup
         
         // Regional Sync (Every 'innerSteps')
@@ -164,7 +220,7 @@ function App() {
       }
     } else {
       // --- Pipeline Parallel Mode ---
-      mode = `Pipeline Parallel (${ppStages} stages)`
+      mode = `PP (${ppStages} stages)` + (isMoE ? " + MoE" : "")
       const hiddenDim = 0.004 * Math.sqrt(parameters)
       const activationBits = (localBatch * hiddenDim * 2 * 8) / ppCompression
       
@@ -229,7 +285,15 @@ function App() {
         <section>
           <h3>Model & Dataset</h3>
           <div className="input-group">
-            <label>Parameters (B): <Tooltip text="Total number of model parameters in billions." /></label>
+            <label>Model Type: <Tooltip text="Dense (all params active) or MoE (only experts active per token)." /></label>
+            <select value={isMoE ? 'moe' : 'dense'} onChange={(e) => setIsMoE(e.target.value === 'moe')}>
+              <option value="dense">Dense</option>
+              <option value="moe">Mixture of Experts (MoE)</option>
+            </select>
+            <span>Type</span>
+          </div>
+          <div className="input-group">
+            <label>Total Parameters (B): <Tooltip text="Total parameters in memory. For MoE, this includes all experts." /></label>
             <input 
               type="number" 
               min="1" 
@@ -240,6 +304,43 @@ function App() {
             />
             <span>B</span>
           </div>
+          {isMoE && (
+            <>
+              <div className="input-group">
+                <label>Active Params (B): <Tooltip text="Parameters active per token. Determines FLOPs/step." /></label>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max={parameters / 1e9} 
+                  step="1" 
+                  value={activeParams / 1e9} 
+                  onChange={(e) => setActiveParams(Number(e.target.value) * 1e9)} 
+                />
+                <span>B</span>
+              </div>
+              <div className="input-group">
+                <label>MoE Layers: <Tooltip text="Number of layers that use expert routing. Each adds All-to-All latency." /></label>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max="200" 
+                  step="1" 
+                  value={moeLayers} 
+                  onChange={(e) => setMoeLayers(Number(e.target.value))} 
+                />
+                <span>Layers</span>
+              </div>
+              <div className="input-group">
+                <label>Expert Parallelism: <Tooltip text="How experts are sharded. Global EP over WAN is extremely slow." /></label>
+                <select value={expertParallelism} onChange={(e) => setExpertParallelism(e.target.value)}>
+                  <option value="none">None (Replicated)</option>
+                  <option value="regional">Regional (Low Latency)</option>
+                  <option value="global">Global (WAN All-to-All)</option>
+                </select>
+                <span>Scope</span>
+              </div>
+            </>
+          )}
           <div className="input-group">
             <label>Tokens (T): <Tooltip text="Total number of training tokens in trillions." /></label>
             <input 
