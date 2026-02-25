@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react'
 
-const GrowthInput = ({ label, value, onChange }: { label: string, value: number, onChange: (val: number) => void }) => {
+const Tooltip = ({ text }: { text: string }) => (
+  <div className="tooltip-container">
+    ⓘ
+    <span className="tooltip-text">{text}</span>
+  </div>
+);
+
+const GrowthInput = ({ label, value, onChange, tooltip }: { label: string, value: number, onChange: (val: number) => void, tooltip: string }) => {
   const multiple = Math.pow(10, value);
   const percent = (multiple - 1) * 100;
 
@@ -18,7 +25,10 @@ const GrowthInput = ({ label, value, onChange }: { label: string, value: number,
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '140px 100px 100px 100px', gap: '15px', alignItems: 'center', marginBottom: '12px' }}>
-      <label style={{ fontSize: '0.9em', fontWeight: 500, color: '#94a3b8' }}>{label}</label>
+      <label style={{ fontSize: '0.9em', fontWeight: 500, color: '#94a3b8' }}>
+        {label}
+        <Tooltip text={tooltip} />
+      </label>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
         <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>OOM/yr</span>
         <input 
@@ -249,7 +259,7 @@ function App() {
         <section>
           <h3>Model & Dataset</h3>
           <div className="input-group">
-            <label>Parameters (B):</label>
+            <label>Parameters (B): <Tooltip text="Total number of model parameters in billions." /></label>
             <input 
               type="number" 
               min="1" 
@@ -261,7 +271,7 @@ function App() {
             <span>B</span>
           </div>
           <div className="input-group">
-            <label>Tokens (T):</label>
+            <label>Tokens (T): <Tooltip text="Total number of training tokens in trillions." /></label>
             <input 
               type="number" 
               min="0.1" 
@@ -277,7 +287,7 @@ function App() {
         <section>
           <h3>Infrastructure (Global)</h3>
           <div className="input-group">
-            <label>Number of Nodes:</label>
+            <label>Number of Nodes: <Tooltip text="Total number of geographically distributed training replicas." /></label>
             <input 
               type="number" 
               min="1" 
@@ -289,7 +299,7 @@ function App() {
             <span>Nodes</span>
           </div>
           <div className="input-group">
-            <label>WAN Bandwidth (Mbps):</label>
+            <label>WAN Bandwidth (Mbps): <Tooltip text="Inter-node upload/download speed over the internet." /></label>
             <input 
               type="number" 
               min="1" 
@@ -301,7 +311,7 @@ function App() {
             <span>Mbps</span>
           </div>
           <div className="input-group">
-            <label>WAN Latency (ms):</label>
+            <label>WAN Latency (ms): <Tooltip text="Average round-trip time between nodes." /></label>
             <input 
               type="number" 
               min="1" 
@@ -313,7 +323,7 @@ function App() {
             <span>ms</span>
           </div>
           <div className="input-group">
-            <label>Node VRAM (GB):</label>
+            <label>Node VRAM (GB): <Tooltip text="Total HBM memory available per node across all its GPUs." /></label>
             <input 
               type="number" 
               min="8" 
@@ -325,7 +335,7 @@ function App() {
             <span>GB</span>
           </div>
           <div className="input-group">
-            <label>Node PFLOPS:</label>
+            <label>Node PFLOPS: <Tooltip text="Peak theoretical FP16/BF16 performance per node." /></label>
             <input 
               type="number" 
               min="1" 
@@ -337,7 +347,7 @@ function App() {
             <span>PFLOPS</span>
           </div>
           <div className="input-group">
-            <label>Base MFU (%):</label>
+            <label>Base MFU (%): <Tooltip text="Standard Model FLOPs Utilization for this hardware on local training." /></label>
             <input 
               type="number" 
               min="5" 
@@ -359,11 +369,12 @@ function App() {
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <h3 style={{ margin: 0 }}>Hierarchical Sync</h3>
             <input type="checkbox" checked={useHierarchy} onChange={(e) => setUseHierarchy(e.target.checked)} />
+            <Tooltip text="Enables regional clusters to sync locally before global WAN synchronization." />
           </div>
           {useHierarchy && (
             <div style={{ borderLeft: '2px solid #38bdf8', paddingLeft: '15px', marginTop: '1.5rem' }}>
               <div className="input-group">
-                <label>Group Nodes:</label>
+                <label>Group Nodes: <Tooltip text="Number of nodes in each local/regional group." /></label>
                 <input 
                   type="number" 
                   min="2" 
@@ -375,7 +386,7 @@ function App() {
                 <span>Nodes</span>
               </div>
               <div className="input-group">
-                <label>Regional Bandwidth (Mbps):</label>
+                <label>Regional BW (Mbps): <Tooltip text="High-speed bandwidth within the regional group (e.g., LAN/Metro)." /></label>
                 <input 
                   type="number" 
                   min="100" 
@@ -387,7 +398,7 @@ function App() {
                 <span>Mbps</span>
               </div>
               <div className="input-group">
-                <label>Regional Latency (ms):</label>
+                <label>Regional Latency (ms): <Tooltip text="Lower latency within the regional cluster." /></label>
                 <input 
                   type="number" 
                   min="1" 
@@ -399,7 +410,7 @@ function App() {
                 <span>ms</span>
               </div>
               <div className="input-group">
-                <label>Regional Sync Steps:</label>
+                <label>Regional Sync Steps: <Tooltip text="Number of regional sync cycles before one global WAN sync." /></label>
                 <input 
                   type="number" 
                   min="1" 
@@ -417,7 +428,7 @@ function App() {
         <section>
           <h3>Algorithm Settings</h3>
           <div className="input-group">
-            <label>Precision:</label>
+            <label>Precision: <Tooltip text="The numeric format used for training. Lower precision reduces bandwidth but can impact stability." /></label>
             <select value={precision} onChange={(e) => setPrecision(e.target.value)}>
               <option value="FP16">FP16 / BF16 (2 bytes)</option>
               <option value="FP8">FP8 (1 byte)</option>
@@ -426,7 +437,7 @@ function App() {
             <span>Precision</span>
           </div>
           <div className="input-group">
-            <label>Inner Steps (Local):</label>
+            <label>Inner Steps (Local): <Tooltip text="Steps performed locally between synchronizations." /></label>
             <input 
               type="number" 
               min="1" 
@@ -438,7 +449,7 @@ function App() {
             <span>Steps</span>
           </div>
           <div className="input-group">
-            <label>Weight Compression:</label>
+            <label>Weight Compression: <Tooltip text="Quantization and sparsification factor for weight synchronization." /></label>
             <input 
               type="number" 
               min="1" 
@@ -450,7 +461,7 @@ function App() {
             <span>x</span>
           </div>
           <div className="input-group">
-            <label>Activation Compression:</label>
+            <label>Activation Compression: <Tooltip text="Compression factor for inter-node activations in Pipeline Parallel mode." /></label>
             <input 
               type="number" 
               min="1" 
@@ -462,7 +473,7 @@ function App() {
             <span>x</span>
           </div>
           <div className="input-group">
-            <label>Straggler Mitigation:</label>
+            <label>Straggler Mitigation: <Tooltip text="Strategies to prevent slow nodes from delaying the entire cluster." /></label>
             <select 
               value={stragglerStrategy} 
               onChange={(e) => setStragglerStrategy(e.target.value)} 
@@ -484,9 +495,24 @@ function App() {
           </p>
           {showLongestRunCalc && (
             <div style={{ borderLeft: '2px solid #38bdf8', paddingLeft: '15px', marginBottom: '20px', marginTop: '1.5rem' }}>
-              <GrowthInput label="HW Growth" value={hwGrowth} onChange={setHwGrowth} />
-              <GrowthInput label="SW Growth" value={swGrowth} onChange={setSwGrowth} />
-              <GrowthInput label="Invest Growth" value={investGrowth} onChange={setInvestGrowth} />
+              <GrowthInput 
+                label="HW Growth" 
+                value={hwGrowth} 
+                onChange={setHwGrowth} 
+                tooltip="Rate of hardware FLOPs/dollar improvement." 
+              />
+              <GrowthInput 
+                label="SW Growth" 
+                value={swGrowth} 
+                onChange={setSwGrowth} 
+                tooltip="Rate of algorithmic efficiency / compute-saving software improvements." 
+              />
+              <GrowthInput 
+                label="Invest Growth" 
+                value={investGrowth} 
+                onChange={setInvestGrowth} 
+                tooltip="Rate of increase in total capital investment for training runs." 
+              />
               
               <p style={{ fontSize: '0.75em', color: '#64748b', marginTop: '15px' }}>
                 * High growth rates suggest shorter optimal runs, as delaying for better tech/budget becomes more attractive.
