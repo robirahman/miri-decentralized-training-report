@@ -128,9 +128,17 @@ function App() {
   const calculate = () => {
     // 1. Memory Analysis
     const bytesPerParam = precision === 'FP16' ? 16 : precision === 'FP8' ? 14 : 13
-    // Memory always depends on TOTAL parameters
-    const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
-    const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
+
+    // For MoE with EP: each node stores shared params + (expert params / EP degree)
+    const expertParams = isMoE ? (parameters - activeParams) : 0
+    const sharedParams = parameters - expertParams
+    const epDegree = (isMoE && expertParallelism !== 'none')
+      ? (expertParallelism === 'global' ? numNodes : nodesPerGroup)
+      : 1
+    const perNodeParams = sharedParams + expertParams / epDegree
+    const memoryBytes = perNodeParams * bytesPerParam
+    const isSharded = memoryBytes > (vramPerNode * 1e9)
+    const ppStages = Math.ceil(memoryBytes / (vramPerNode * 1e9))
     
     // 2. Resource Adjustments (e.g. Redundancy / Backup Workers)
     const effectiveNodes = stragglerStrategy === 'redundancy' ? numNodes / 1.1 : numNodes
@@ -219,24 +227,46 @@ function App() {
         totalTimeSeconds = totalOuterSteps * effectiveOuterTime
       }
     } else {
-      // --- Pipeline Parallel Mode ---
-      mode = `PP (${ppStages} stages)` + (isMoE ? " + MoE" : "")
+      // --- PP-Group DiLoCo Mode ---
+      // Group S nodes into PP clusters, run DiLoCo across N/S groups.
+      // When hierarchy is enabled, PP groups use regional interconnect.
+      const numGroups = Math.floor(effectiveNodes / ppStages)
       const hiddenDim = 0.03 * Math.sqrt(parameters)
       const activationBits = (localBatch * hiddenDim * 2 * 8) / ppCompression
-      
-      const commPerMicroSec = (2 * activationBits / microBatches) / (bandwidthMbps * 1e6)
-      const computePerMicroSec = computeTimePerStep / microBatches
-      const latencySec = latencyMs / 1000
 
-      // Straggler penalty applies to the pipeline handoff as well
-      const straggler = getStragglerFactor(effectiveNodes / ppStages)
-      const timePerStep = (microBatches + ppStages - 1) * (computePerMicroSec + (commPerMicroSec + latencySec) * straggler)
-      
-      globalCommSec = (microBatches + ppStages - 1) * commPerMicroSec * straggler
-      latencyPenaltySec = (microBatches + ppStages - 1) * latencySec * straggler
-      computeBlockSec = (microBatches + ppStages - 1) * computePerMicroSec
-      
-      totalTimeSeconds = (tokens / (localBatch * (effectiveNodes / ppStages))) * timePerStep
+      // PP intra-group uses regional interconnect if hierarchy enabled, else WAN
+      const ppBandwidth = useHierarchy ? regionalBandwidth : bandwidthMbps
+      const ppLatencyMs = useHierarchy ? regionalLatency : latencyMs
+
+      const commPerMicroSec = (2 * activationBits / microBatches) / (ppBandwidth * 1e6)
+      const computePerMicroSec = computeTimePerStep / microBatches
+      const ppLatencySec = ppLatencyMs / 1000
+      const ppStraggler = getStragglerFactor(ppStages)
+
+      // GPipe bubble formula for one training step within a PP group
+      const ppStepTime = (microBatches + ppStages - 1) * (computePerMicroSec + (commPerMicroSec + ppLatencySec) * ppStraggler)
+
+      if (numGroups < 2) {
+        // Not enough nodes to form multiple PP groups — pure PP over WAN
+        mode = `PP over WAN (${ppStages} stages)` + (isMoE ? " + MoE" : "")
+        globalCommSec = (microBatches + ppStages - 1) * commPerMicroSec * ppStraggler
+        latencyPenaltySec = (microBatches + ppStages - 1) * ppLatencySec * ppStraggler
+        computeBlockSec = (microBatches + ppStages - 1) * computePerMicroSec
+        totalTimeSeconds = (tokens / (localBatch * Math.max(1, effectiveNodes / ppStages))) * ppStepTime
+      } else {
+        // PP-Group DiLoCo: DiLoCo outer loop across groups
+        mode = `PP-Group DiLoCo (${ppStages}×${numGroups})` + (isMoE ? " + MoE" : "")
+        const payloadBits = (parameters * 2 * 8) / compression
+        computeBlockSec = innerSteps * ppStepTime
+        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
+
+        const effectiveOuterTime = streamingEnabled
+          ? Math.max(computeBlockSec, globalCommSec)
+          : computeBlockSec + globalCommSec
+
+        const totalOuterSteps = (tokens / (localBatch * numGroups)) / innerSteps
+        totalTimeSeconds = totalOuterSteps * effectiveOuterTime
+      }
     }
 
     // Effective compute time accounts for algorithmic penalty
@@ -262,6 +292,13 @@ function App() {
     const maxParamsFP8 = (vramPerNode * 1e9) / 14
     const maxParamsFP4 = (vramPerNode * 1e9) / 13
 
+    // PP-Group DiLoCo metadata
+    const numPPGroups = isSharded ? Math.floor(effectiveNodes / ppStages) : 0
+    const ppGroupMode = isSharded && numPPGroups >= 2
+    const epReducedMemory = isMoE && expertParallelism !== 'none' && epDegree > 1
+      && (parameters * bytesPerParam) > (vramPerNode * 1e9)  // would have been sharded without EP
+      && !isSharded  // but EP made it fit
+
     setResults({
       mode,
       computeStepSec: computeTimePerStep.toFixed(2),
@@ -276,6 +313,10 @@ function App() {
       globalHfu: (globalHfu * 100).toFixed(1),
       isSharded,
       ppStages,
+      numPPGroups,
+      ppGroupMode,
+      perNodeParams: (perNodeParams / 1e9).toFixed(1),
+      epReducedMemory,
       maxParamsFP16: (maxParamsFP16 / 1e9).toFixed(0),
       maxParamsFP8: (maxParamsFP8 / 1e9).toFixed(0),
       maxParamsFP4: (maxParamsFP4 / 1e9).toFixed(0),
@@ -658,25 +699,67 @@ function App() {
               </div>
             </div>
             
-            {results.isSharded && (
-              <div style={{ marginTop: '20px', padding: '15px', background: '#1c1317', border: '1px solid #7f1d1d', borderRadius: '10px' }}>
-                <p style={{ color: '#fca5a5', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
-                  Model requires Pipeline Parallelism over WAN ({results.ppStages} stages)
+            {results.epReducedMemory && (
+              <div style={{ marginTop: '20px', padding: '15px', background: '#0f2318', border: '1px solid #166534', borderRadius: '10px' }}>
+                <p style={{ color: '#86efac', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
+                  Expert Parallelism reduced per-node memory to {results.perNodeParams}B params
+                </p>
+                <p style={{ color: '#94a3b8', margin: 0, fontSize: '0.8em' }}>
+                  Without EP, the full {(parameters / 1e9).toFixed(0)}B model would require pipeline parallelism.
+                  EP shards experts across nodes, so each node stores only shared parameters + its local experts,
+                  allowing DiLoCo mode instead of PP.
+                </p>
+              </div>
+            )}
+
+            {results.isSharded && results.ppGroupMode && (
+              <div style={{ marginTop: '20px', padding: '15px', background: '#1c1a17', border: '1px solid #78630d', borderRadius: '10px' }}>
+                <p style={{ color: '#fde68a', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
+                  PP-Group DiLoCo: {results.ppStages} PP stages × {results.numPPGroups} DiLoCo groups ({results.perNodeParams}B params/node)
                 </p>
                 <p style={{ color: '#94a3b8', margin: '0 0 12px 0', fontSize: '0.8em' }}>
-                  The model exceeds single-node VRAM, forcing pipeline-parallel communication over the WAN on every micro-batch.
-                  Each handover pays the full network round-trip latency, making this configuration extremely slow.
-                  In practice, developers facing this constraint would consider the following alternatives:
+                  The model exceeds single-node VRAM. Nodes are grouped into {results.ppStages}-node PP clusters that shard the model,
+                  with DiLoCo synchronization across {results.numPPGroups} groups every {innerSteps} steps.
+                  {useHierarchy
+                    ? ' PP handoffs use regional interconnect. DiLoCo sync uses WAN.'
+                    : ' Both PP handoffs and DiLoCo sync use WAN.'}
                 </p>
                 <div style={{ fontSize: '0.8em', color: '#cbd5e1', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <p style={{ margin: 0 }}>
-                    <strong style={{ color: '#fbbf24' }}>Reduce precision:</strong> Max model that fits on one node — FP16: {results.maxParamsFP16}B, FP8: {results.maxParamsFP8}B, FP4: {results.maxParamsFP4}B
+                    <strong style={{ color: '#fbbf24' }}>To improve performance:</strong> Max model on one node — FP16: {results.maxParamsFP16}B, FP8: {results.maxParamsFP8}B, FP4: {results.maxParamsFP4}B
+                  </p>
+                  {isMoE && expertParallelism === 'none' && (
+                    <p style={{ margin: 0 }}>
+                      <strong style={{ color: '#fbbf24' }}>Enable Expert Parallelism:</strong> Shard experts across nodes to reduce per-node memory and potentially avoid PP entirely
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {results.isSharded && !results.ppGroupMode && (
+              <div style={{ marginTop: '20px', padding: '15px', background: '#1c1317', border: '1px solid #7f1d1d', borderRadius: '10px' }}>
+                <p style={{ color: '#fca5a5', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
+                  Insufficient nodes for PP-Group DiLoCo ({results.ppStages} stages needed, only {numNodes} nodes)
+                </p>
+                <p style={{ color: '#94a3b8', margin: '0 0 12px 0', fontSize: '0.8em' }}>
+                  The model requires {results.ppStages} PP stages but there aren't enough nodes to form multiple groups.
+                  All nodes form a single pipeline, with no DiLoCo parallelism. This is extremely slow over WAN.
+                </p>
+                <div style={{ fontSize: '0.8em', color: '#cbd5e1', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: '#fbbf24' }}>Reduce precision:</strong> Max model on one node — FP16: {results.maxParamsFP16}B, FP8: {results.maxParamsFP8}B, FP4: {results.maxParamsFP4}B
                   </p>
                   <p style={{ margin: 0 }}>
-                    <strong style={{ color: '#fbbf24' }}>Train a smaller model:</strong> Stay under {results.maxParamsFP16}B params (FP16) to use DiLoCo instead of PP
+                    <strong style={{ color: '#fbbf24' }}>Train a smaller model:</strong> Stay under {results.maxParamsFP4}B params (FP4) to use DiLoCo
                   </p>
+                  {isMoE && expertParallelism === 'none' && (
+                    <p style={{ margin: 0 }}>
+                      <strong style={{ color: '#fbbf24' }}>Enable Expert Parallelism:</strong> Shard experts across nodes to reduce per-node memory
+                    </p>
+                  )}
                   <p style={{ margin: 0 }}>
-                    <strong style={{ color: '#fbbf24' }}>Use MoE architecture:</strong> Keep total params high but active params within node VRAM
+                    <strong style={{ color: '#fbbf24' }}>Add more nodes:</strong> Need at least {results.ppStages * 2} nodes for PP-Group DiLoCo
                   </p>
                 </div>
               </div>

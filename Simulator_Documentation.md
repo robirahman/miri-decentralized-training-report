@@ -103,6 +103,26 @@ where $S$ is the number of pipeline stages (each assigned to a different node).
 
 For MoE models, memory is determined by **total** parameters $P_{\text{total}}$ (all experts must be stored), while compute uses **active** parameters $P_{\text{active}}$. This means MoE models require more memory per useful FLOP than dense models, with the ratio being $P_{\text{total}} / P_{\text{active}}$.
 
+### 2.4 Expert Parallelism Memory Reduction
+
+When Expert Parallelism (EP) is enabled, experts are sharded across participating nodes. Each node stores only the shared (non-expert) parameters plus its fraction of the expert parameters:
+
+$$M_{\text{node}} = \left(P_{\text{shared}} + \frac{P_{\text{experts}}}{N_{\text{EP}}}\right) \times \beta$$
+
+where:
+*   $P_{\text{shared}} = P_{\text{active}}$ (attention, embeddings, routing layers — parameters active on every token).
+*   $P_{\text{experts}} = P_{\text{total}} - P_{\text{active}}$ (expert feed-forward parameters).
+*   $N_{\text{EP}}$ = EP degree: $N$ (all nodes) for global EP, or $N_{\text{group}}$ for regional EP.
+
+This can dramatically reduce per-node memory. For example, a 600B MoE with 100B shared and 500B expert params across 72 nodes: $M_{\text{node}} = (100\text{B} + 500\text{B}/72) \times 16 \approx 1{,}711$ GB, versus $600\text{B} \times 16 = 9{,}600$ GB without EP.
+
+**Evidence:**
+*   [SPES Protocol (Prime Intellect, 2025)](https://github.com/PrimeIntellect-ai/spes): expert-sharded MoE for decentralized training. Each node trains only on tokens routed to its local experts, avoiding per-forward-pass All-to-All communication. Achieves 35–65% communication reduction vs. standard DiLoCo.
+*   [Lepikhin et al. (2020, "GShard")](https://arxiv.org/abs/2006.16668): standard EP distributes experts across devices, reducing per-device memory proportionally.
+*   [DeepSeek-V2 (2024)](https://arxiv.org/abs/2405.04434): uses expert parallelism to train a 236B MoE across devices with only 21B active parameters per token.
+
+**Implication:** When EP reduces per-node memory below Node VRAM, the simulator avoids pipeline parallelism entirely and uses DiLoCo mode, which is dramatically more efficient over WAN.
+
 ---
 
 ## 3. Communication Models
@@ -212,6 +232,44 @@ $$T_{\text{step}} = (M + S - 1) \cdot (T_{\text{micro\_comp}} + (T_{\text{micro\
 **Evidence:**
 *   This is the standard GPipe pipeline bubble formula from [Huang et al. (2019)](https://arxiv.org/abs/1811.06965).
 *   In WAN settings, the latency term dominates because every micro-batch handover incurs a network round-trip, as noted in [Ryabinin et al. (2023, "SWARM Parallelism")](https://arxiv.org/abs/2301.11913).
+
+### 3.4 Mode C: PP-Group DiLoCo
+
+Used when the model exceeds single-node VRAM and there are enough nodes to form multiple pipeline groups. Instead of running a single pipeline across all WAN-connected nodes, nodes are grouped into small PP clusters of size $S$ (the number of pipeline stages needed), and DiLoCo is run across the $G = \lfloor N / S \rfloor$ groups.
+
+#### Intra-Group PP
+
+Each group of $S$ nodes runs standard pipeline parallelism using the GPipe bubble formula:
+
+$$T_{\text{PP\_step}} = (M + S - 1) \cdot (T_{\text{micro\_comp}} + (T_{\text{micro\_comm}} + \text{Lat}_{\text{PP}}) \cdot f_{\text{straggler}}(S))$$
+
+When hierarchical mode is enabled, PP groups use **regional** latency and bandwidth for intra-group communication (nodes in a group are co-located in the same region). Otherwise, PP handoffs use WAN latency.
+
+#### Inter-Group DiLoCo
+
+Groups synchronize pseudo-gradients every $H$ inner steps, identically to Mode A:
+
+$$T_{\text{sync}} = \left(\frac{2 \cdot V_{\text{bits}}}{\text{BW}_{\text{WAN}}} + \text{Lat}_{\text{WAN}}\right) \times f_{\text{straggler}}(G)$$
+
+With streaming enabled:
+
+$$T_{\text{outer}} = \max(H \cdot T_{\text{PP\_step}},\ T_{\text{sync}})$$
+
+#### Total Training Time
+
+$$T_{\text{total}} = \frac{D}{B_{\text{local}} \cdot G \cdot H} \cdot T_{\text{outer}}$$
+
+Each group processes $B_{\text{local}}$ tokens per step (the pipeline splits the model, not the data).
+
+#### Fallback: Pure PP over WAN
+
+When $G < 2$ (not enough nodes to form multiple groups), the simulator falls back to a single pipeline across all nodes with no DiLoCo parallelism. This is extremely slow and triggers a prominent warning.
+
+**Evidence:**
+*   [DiLoCoX (Chen et al., 2025)](https://arxiv.org/abs/2506.21263): combines intra-group PP (fast interconnect) with inter-group DiLoCo (slow WAN). On a 107B model across 160 A800 GPUs over 1 Gbps interconnect, achieved 357× throughput improvement over standard AllReduce.
+*   [SWARM Parallelism (Ryabinin et al., 2023)](https://arxiv.org/abs/2301.11913): adaptive PP over unreliable internet. At 100ms RTT, GPT-3-scale models retain ~60% utilization (72% with compression).
+
+**Why PP-Group DiLoCo is far superior to PP-over-WAN:** In pure PP-over-WAN, every micro-batch handover pays WAN latency. With $M=8$ micro-batches and $S=3$ stages, there are $(8+3-1)=10$ sequential latency penalties per step. In PP-Group DiLoCo, the WAN is only used for periodic DiLoCo sync (every $H=128$ steps), while PP handoffs within a group can use faster regional interconnect.
 
 ---
 
@@ -392,56 +450,69 @@ On top of precision, the user can apply further compression via quantization and
 
 ## 10. Known Limitations & Future Work
 
-1.  **PP over WAN is modeled but rarely optimal.** When the model exceeds single-node VRAM, the simulator correctly shows that pipeline parallelism over WAN is catastrophically slow. The simulator displays advisory guidance suggesting alternatives the developer would consider (lower precision, smaller model, MoE). In reality, competent developers would almost always pursue one of these alternatives rather than run PP over a 100 Mbps link.
+1.  **PP-Group DiLoCo assumes homogeneous groups.** All PP groups are assumed to have equal compute power and interconnect. In practice, heterogeneous node capabilities would cause some groups to be faster than others, increasing the straggler penalty at the DiLoCo sync boundary.
 2.  **Streaming DiLoCo memory overhead:** The simulator does not model the ~66% additional memory requirement for Streaming DiLoCo (original weights buffer + outer optimizer state). This could trigger sharding in cases the simulator currently classifies as data-parallel.
 3.  **Hierarchical compression:** The simulator uses the same compression ratio for both regional and global tiers. In practice, regional sync over LAN could use less aggressive compression.
 4.  **Heterogeneous hardware:** All nodes are assumed identical. Real decentralized networks may have heterogeneous compute speeds, which would increase straggler effects beyond the logarithmic model.
 5.  **Asynchronous methods:** The simulator only models synchronous protocols (DiLoCo, hierarchical DiLoCo). Fully asynchronous approaches ([Diskin et al. 2021](https://arxiv.org/abs/2106.10207)) are not modeled.
 6.  **PP mode only models forward activations.** Real pipeline parallelism also sends gradients backward through the pipeline, roughly doubling communication per micro-batch.
+7.  **EP memory model is simplified.** The EP memory reduction assumes a clean split between shared and expert parameters ($P_{\text{shared}} = P_{\text{active}}$). Real MoE architectures may have routing layers, load-balancing buffers, and token-drop buffers that add overhead beyond this estimate.
 
 ---
 
 ## Appendix A: When the Model Doesn't Fit — Developer Decision Tree
 
-The simulator's purpose is to answer: *given these exact hardware constraints (node VRAM, WAN bandwidth, WAN latency, node count), how long does this training run take?* When the model exceeds single-node VRAM, the simulator honestly reports the PP-over-WAN performance — which will be extremely poor due to per-micro-batch WAN latency. This is the correct answer for those specific constraints.
+The simulator's purpose is to answer: *given these exact hardware constraints (node VRAM, WAN bandwidth, WAN latency, node count), how long does this training run take?* When the model exceeds single-node VRAM, the simulator automatically applies the best available strategy: EP memory reduction (MoE), PP-Group DiLoCo, or pure PP-over-WAN as a last resort.
 
-However, a developer facing this situation would not simply accept PP-over-WAN. They would adjust their training configuration to stay within the hardware constraints. The simulator surfaces these alternatives in an advisory panel. This appendix explains the decision tree.
+This appendix explains the full decision tree and what the simulator does at each stage.
 
 ### Decision Tree
 
 ```
-Model fits on one node?
-├── YES → DiLoCo (fast, efficient)
-└── NO → Developer considers alternatives:
-    ├── 1. Switch to lower precision (FP8/FP4)
-    │   └── Reduces bytes/param from 16 → 14 or 13
-    │       May allow the model to fit → back to DiLoCo
+Model fits on one node? (P × β ≤ VRAM)
+├── YES → Mode A: DiLoCo (fast, efficient)
+│
+└── NO →
+    ├── MoE with EP enabled?
+    │   ├── YES → Compute per-node memory: (P_shared + P_experts/N_EP) × β
+    │   │   ├── Fits on one node? → Mode A: DiLoCo (EP saved the day!)
+    │   │   └── Still too large → continue to PP-Group below
+    │   └── NO → continue to PP-Group below
     │
-    ├── 2. Train a smaller dense model
-    │   └── Max model size = Node_VRAM / bytesPerParam
-    │       e.g., 2304 GB / 16 = 144B params (FP16)
-    │       Trade model capability for training feasibility
+    ├── Enough nodes for multiple PP groups? (N / ppStages ≥ 2)
+    │   ├── YES → Mode C: PP-Group DiLoCo
+    │   │   ├── Group S nodes into PP clusters
+    │   │   ├── Run DiLoCo across N/S groups
+    │   │   └── Hierarchy enabled? PP uses regional interconnect
+    │   │
+    │   └── NO → Pure PP over WAN (last resort, extremely slow)
     │
-    ├── 3. Use MoE architecture
-    │   └── Keep total params high (for capacity)
-    │       but active params low (for compute + memory)
-    │       Total params must still fit in VRAM for weights,
-    │       but optimizer states can potentially be offloaded
-    │
-    └── 4. Accept PP over WAN (last resort)
-        └── The simulator computes this case accurately
-            Expect extreme latency overhead
+    └── Developer should also consider:
+        ├── Switch to lower precision (FP8/FP4)
+        │   └── Reduces β from 16 → 14 or 13, may allow DiLoCo
+        ├── Train a smaller model
+        │   └── Max size = VRAM / β (e.g., 2304 GB / 16 = 144B)
+        └── Use MoE + EP to get memory below the threshold
 ```
 
-### Why PP over WAN Is a Last Resort
+### Mode Comparison
 
-Consider the default configuration: 100 Mbps WAN, 100ms latency. With just 2 PP stages and 8 micro-batches, the pipeline has $(8 + 2 - 1) = 9$ sequential slots, each paying 100ms of WAN latency = **900ms of pure idle time per step**. This is in addition to the activation bandwidth cost. For comparison, the compute time per step for a 144B model is ~25 seconds — the 900ms latency alone would add ~4% overhead even in this favorable case. For larger models requiring more PP stages, the overhead grows linearly.
+| Mode | When Used | WAN Hit Per Step | Typical Overhead |
+| :--- | :--- | :--- | :--- |
+| A: DiLoCo | Model fits on one node | Every H steps (sync only) | Low (communication-overlapped) |
+| C: PP-Group DiLoCo | Model sharded, N/S ≥ 2 groups | PP within group + sync every H steps | Moderate (PP bubble + periodic sync) |
+| PP over WAN | Model sharded, N/S < 2 | Every micro-batch | Extreme (WAN latency dominates) |
 
-The fundamental issue is that pipeline parallelism was designed for fast datacenter interconnects (NVLink at ~900 GB/s, InfiniBand at ~400 Gbps, sub-microsecond latency). Running it over WAN links that are 4–6 orders of magnitude slower and higher-latency makes every micro-batch handover the dominant bottleneck.
+### Why PP-Group DiLoCo Is Superior to Pure PP-over-WAN
+
+Consider a 300B model on 72 nodes with 2304 GB VRAM each (FP16): $300\text{B} \times 16 = 4{,}800$ GB, requiring $S=3$ PP stages.
+
+**Pure PP over WAN (old behavior):** A single 3-stage pipeline across all 72 nodes. Each of the $(M + S - 1) = 10$ micro-batch slots pays 100ms WAN latency = 1 second of pure idle time per step. The pipeline only utilizes 24 nodes (72/3), wasting 48 nodes.
+
+**PP-Group DiLoCo (new behavior):** $72 / 3 = 24$ groups of 3 nodes each. Each group runs a 3-stage pipeline. All 72 nodes are utilized. WAN latency only affects the DiLoCo sync every 128 steps, not every micro-batch. With hierarchical mode, PP handoffs use 20ms regional latency instead of 100ms WAN.
 
 ### Guidance for Simulator Users
 
-The simulator's PP mode is useful for two purposes:
-
-1.  **Quantifying the penalty.** Users can see exactly how bad PP-over-WAN would be, which motivates staying within the DiLoCo regime.
-2.  **Exploring the boundary.** By toggling precision or model size, users can find the largest model that still fits on one node and compare the DiLoCo performance of that configuration against the PP performance of a slightly larger model. This reveals the sharp cliff at the sharding boundary and helps identify the optimal model size for a given hardware configuration.
+1.  **Explore EP for MoE models.** If your model is MoE, enabling Expert Parallelism may reduce per-node memory enough to avoid PP entirely — the biggest performance win.
+2.  **Use hierarchical mode with PP-Group DiLoCo.** When the model must be sharded, enabling hierarchical mode lets PP groups use fast regional interconnect, dramatically reducing per-micro-batch latency.
+3.  **Explore the boundary.** Toggle precision or model size to find the largest model that fits on one node. The performance cliff at the sharding boundary is significant, so staying in DiLoCo mode (even with a smaller model) is often better than PP-Group DiLoCo with a larger model.
