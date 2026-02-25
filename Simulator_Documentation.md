@@ -183,6 +183,12 @@ Used when the model exceeds a single node's VRAM. The model is partitioned acros
 
 $$A = B_{\text{local}} \cdot h \cdot 2 \text{ bytes}$$
 
+*   $B_{\text{local}}$ = local batch size **in tokens** (not sequences). This equals $\text{num\_sequences} \times \text{seq\_length}$ (e.g. $32 \times 4096 = 131{,}072$).
+*   $h$ = hidden dimension.
+*   $2$ = bytes per element (FP16).
+
+Since $B_{\text{local}}$ is measured in tokens, the formula correctly accounts for sequence length. The activation tensor at a pipeline boundary is shaped $[\text{num\_sequences}, \text{seq\_length}, h]$, and the total number of elements is $\text{num\_sequences} \times \text{seq\_length} \times h = B_{\text{local}} \times h$.
+
 **Heuristic: Hidden dimension $h \approx 0.03 \cdot \sqrt{P}$.** This is derived from the standard transformer parameter formula $P \approx 12 \cdot L \cdot h^2$, where $L$ (number of layers) also scales with $h$, yielding $h \propto \sqrt{P}$.
 
 **Validation against known architectures:**
@@ -194,8 +200,6 @@ $$A = B_{\text{local}} \cdot h \cdot 2 \text{ bytes}$$
 | LLaMA-3.1 405B | 405B | 19,092 | 16,384 | +17% |
 
 The heuristic is accurate within ~20% across the range of models likely to require pipeline parallelism (>70B parameters).
-
-**Limitation:** The activation formula omits sequence length. Real activation tensors at pipeline boundaries are shaped $[B, S_{\text{seq}}, h]$. The current formula effectively assumes per-token communication or a sequence length of 1. For realistic sequence lengths (4096+), this underestimates PP communication by a factor of $S_{\text{seq}}$.
 
 #### PP Step Time
 
@@ -375,7 +379,7 @@ On top of precision, the user can apply further compression via quantization and
 | `mfu` | Fraction | 0.40 | Base Model FLOP Utilization. |
 | `innerSteps` | Integer | 128 | Local SGD steps between synchronizations. |
 | `compression` | Factor | 16× | Pseudo-gradient compression ratio. |
-| `localBatch` | Tokens | 131,072 | Tokens per local training step. |
+| `localBatch` | Tokens | 131,072 | Tokens per local training step (= num\_sequences × seq\_length). |
 | `microBatches` | Integer | 8 | Micro-batches for pipeline parallelism. |
 | `precision` | Enum | FP16 | Compute precision (FP16, FP8, FP4). |
 | `streamingEnabled` | Boolean | true | Overlap communication with compute. |
@@ -388,8 +392,56 @@ On top of precision, the user can apply further compression via quantization and
 
 ## 10. Known Limitations & Future Work
 
-1.  **Activation sequence length:** The PP-mode activation formula omits sequence length, underestimating activation communication by a factor of $S_{\text{seq}}$. Adding a sequence length input would improve PP-mode accuracy.
+1.  **PP over WAN is modeled but rarely optimal.** When the model exceeds single-node VRAM, the simulator correctly shows that pipeline parallelism over WAN is catastrophically slow. The simulator displays advisory guidance suggesting alternatives the developer would consider (lower precision, smaller model, MoE). In reality, competent developers would almost always pursue one of these alternatives rather than run PP over a 100 Mbps link.
 2.  **Streaming DiLoCo memory overhead:** The simulator does not model the ~66% additional memory requirement for Streaming DiLoCo (original weights buffer + outer optimizer state). This could trigger sharding in cases the simulator currently classifies as data-parallel.
 3.  **Hierarchical compression:** The simulator uses the same compression ratio for both regional and global tiers. In practice, regional sync over LAN could use less aggressive compression.
 4.  **Heterogeneous hardware:** All nodes are assumed identical. Real decentralized networks may have heterogeneous compute speeds, which would increase straggler effects beyond the logarithmic model.
 5.  **Asynchronous methods:** The simulator only models synchronous protocols (DiLoCo, hierarchical DiLoCo). Fully asynchronous approaches ([Diskin et al. 2021](https://arxiv.org/abs/2106.10207)) are not modeled.
+6.  **PP mode only models forward activations.** Real pipeline parallelism also sends gradients backward through the pipeline, roughly doubling communication per micro-batch.
+
+---
+
+## Appendix A: When the Model Doesn't Fit — Developer Decision Tree
+
+The simulator's purpose is to answer: *given these exact hardware constraints (node VRAM, WAN bandwidth, WAN latency, node count), how long does this training run take?* When the model exceeds single-node VRAM, the simulator honestly reports the PP-over-WAN performance — which will be extremely poor due to per-micro-batch WAN latency. This is the correct answer for those specific constraints.
+
+However, a developer facing this situation would not simply accept PP-over-WAN. They would adjust their training configuration to stay within the hardware constraints. The simulator surfaces these alternatives in an advisory panel. This appendix explains the decision tree.
+
+### Decision Tree
+
+```
+Model fits on one node?
+├── YES → DiLoCo (fast, efficient)
+└── NO → Developer considers alternatives:
+    ├── 1. Switch to lower precision (FP8/FP4)
+    │   └── Reduces bytes/param from 16 → 14 or 13
+    │       May allow the model to fit → back to DiLoCo
+    │
+    ├── 2. Train a smaller dense model
+    │   └── Max model size = Node_VRAM / bytesPerParam
+    │       e.g., 2304 GB / 16 = 144B params (FP16)
+    │       Trade model capability for training feasibility
+    │
+    ├── 3. Use MoE architecture
+    │   └── Keep total params high (for capacity)
+    │       but active params low (for compute + memory)
+    │       Total params must still fit in VRAM for weights,
+    │       but optimizer states can potentially be offloaded
+    │
+    └── 4. Accept PP over WAN (last resort)
+        └── The simulator computes this case accurately
+            Expect extreme latency overhead
+```
+
+### Why PP over WAN Is a Last Resort
+
+Consider the default configuration: 100 Mbps WAN, 100ms latency. With just 2 PP stages and 8 micro-batches, the pipeline has $(8 + 2 - 1) = 9$ sequential slots, each paying 100ms of WAN latency = **900ms of pure idle time per step**. This is in addition to the activation bandwidth cost. For comparison, the compute time per step for a 144B model is ~25 seconds — the 900ms latency alone would add ~4% overhead even in this favorable case. For larger models requiring more PP stages, the overhead grows linearly.
+
+The fundamental issue is that pipeline parallelism was designed for fast datacenter interconnects (NVLink at ~900 GB/s, InfiniBand at ~400 Gbps, sub-microsecond latency). Running it over WAN links that are 4–6 orders of magnitude slower and higher-latency makes every micro-batch handover the dominant bottleneck.
+
+### Guidance for Simulator Users
+
+The simulator's PP mode is useful for two purposes:
+
+1.  **Quantifying the penalty.** Users can see exactly how bad PP-over-WAN would be, which motivates staying within the DiLoCo regime.
+2.  **Exploring the boundary.** By toggling precision or model size, users can find the largest model that still fits on one node and compare the DiLoCo performance of that configuration against the PP performance of a slightly larger model. This reveals the sharp cliff at the sharding boundary and helps identify the optimal model size for a given hardware configuration.

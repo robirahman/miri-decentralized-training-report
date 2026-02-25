@@ -257,6 +257,11 @@ function App() {
     const combinedGrowth = hwGrowth + swGrowth + investGrowth
     const maxDays = (1 / (combinedGrowth * Math.LN10)) * 365
 
+    // Compute max model sizes that fit on one node at each precision
+    const maxParamsFP16 = (vramPerNode * 1e9) / 16
+    const maxParamsFP8 = (vramPerNode * 1e9) / 14
+    const maxParamsFP4 = (vramPerNode * 1e9) / 13
+
     setResults({
       mode,
       computeStepSec: computeTimePerStep.toFixed(2),
@@ -270,6 +275,10 @@ function App() {
       globalMfu: (globalMfu * 100).toFixed(1),
       globalHfu: (globalHfu * 100).toFixed(1),
       isSharded,
+      ppStages,
+      maxParamsFP16: (maxParamsFP16 / 1e9).toFixed(0),
+      maxParamsFP8: (maxParamsFP8 / 1e9).toFixed(0),
+      maxParamsFP4: (maxParamsFP4 / 1e9).toFixed(0),
       maxDays: maxDays.toFixed(0),
       bottleneck: (globalCommSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
       feasibility: effectiveDays < maxDays ? "Feasible" : `Impractical (>${maxDays.toFixed(0)} days)`
@@ -343,15 +352,27 @@ function App() {
           )}
           <div className="input-group">
             <label>Tokens (T): <Tooltip text="Total number of training tokens in trillions." /></label>
-            <input 
-              type="number" 
-              min="0.1" 
-              max="100" 
-              step="0.1" 
-              value={tokens / 1e12} 
-              onChange={(e) => setTokens(Number(e.target.value) * 1e12)} 
+            <input
+              type="number"
+              min="0.1"
+              max="100"
+              step="0.1"
+              value={tokens / 1e12}
+              onChange={(e) => setTokens(Number(e.target.value) * 1e12)}
             />
             <span>T</span>
+          </div>
+          <div className="input-group">
+            <label>Local Batch (tokens): <Tooltip text="Tokens per training step per node. Equal to num_sequences × seq_length (e.g. 32 × 4096 = 131,072). Determines compute per step and activation size in PP mode." /></label>
+            <input
+              type="number"
+              min="1024"
+              max="4194304"
+              step="1024"
+              value={localBatch}
+              onChange={(e) => setLocalBatch(Number(e.target.value))}
+            />
+            <span>tokens</span>
           </div>
         </section>
 
@@ -638,9 +659,26 @@ function App() {
             </div>
             
             {results.isSharded && (
-              <div style={{ marginTop: '20px', fontSize: '0.8em', color: '#64748b', maxWidth: '100%', overflowWrap: 'break-word', fontStyle: 'italic' }}>
-                * Model exceeds single-node VRAM. Pipeline Parallelism is active. 
-                Network latency adds idle time to every micro-batch handover.
+              <div style={{ marginTop: '20px', padding: '15px', background: '#1c1317', border: '1px solid #7f1d1d', borderRadius: '10px' }}>
+                <p style={{ color: '#fca5a5', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
+                  Model requires Pipeline Parallelism over WAN ({results.ppStages} stages)
+                </p>
+                <p style={{ color: '#94a3b8', margin: '0 0 12px 0', fontSize: '0.8em' }}>
+                  The model exceeds single-node VRAM, forcing pipeline-parallel communication over the WAN on every micro-batch.
+                  Each handover pays the full network round-trip latency, making this configuration extremely slow.
+                  In practice, developers facing this constraint would consider the following alternatives:
+                </p>
+                <div style={{ fontSize: '0.8em', color: '#cbd5e1', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: '#fbbf24' }}>Reduce precision:</strong> Max model that fits on one node — FP16: {results.maxParamsFP16}B, FP8: {results.maxParamsFP8}B, FP4: {results.maxParamsFP4}B
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: '#fbbf24' }}>Train a smaller model:</strong> Stay under {results.maxParamsFP16}B params (FP16) to use DiLoCo instead of PP
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: '#fbbf24' }}>Use MoE architecture:</strong> Keep total params high but active params within node VRAM
+                  </p>
+                </div>
               </div>
             )}
           </div>
