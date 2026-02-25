@@ -7,58 +7,47 @@ const Tooltip = ({ text }: { text: string }) => (
   </div>
 );
 
-const GrowthInput = ({ label, value, onChange, tooltip }: { label: string, value: number, onChange: (val: number) => void, tooltip: string }) => {
-  const multiple = Math.pow(10, value);
-  const percent = (multiple - 1) * 100;
-
+const GrowthInput = ({ label, value, onChange, tooltip, unit }: { label: string, value: number, onChange: (val: number) => void, tooltip: string, unit: string }) => {
   const inputStyle = {
     background: '#2a2a2a',
     color: '#e2e8f0',
     border: '1px solid #475569',
     padding: '6px 10px',
     borderRadius: '6px',
-    width: '80px',
+    width: '100px',
     fontSize: '0.9em',
     outline: 'none',
     boxSizing: 'border-box' as const
   };
 
+  // Convert internal OOM/yr to display value
+  const displayValue = unit === 'oom'
+    ? parseFloat(value.toFixed(3))
+    : unit === 'percent'
+    ? Math.round((Math.pow(10, value) - 1) * 100)
+    : parseFloat(Math.pow(10, value).toFixed(2));
+
+  const step = unit === 'oom' ? 0.01 : unit === 'percent' ? 1 : 0.1;
+
+  const handleChange = (raw: number) => {
+    if (unit === 'oom') onChange(raw);
+    else if (unit === 'percent') onChange(Math.log10(raw / 100 + 1));
+    else onChange(Math.log10(raw)); // multiple
+  };
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '140px 100px 100px 100px', gap: '15px', alignItems: 'center', marginBottom: '12px' }}>
-      <label style={{ fontSize: '0.9em', fontWeight: 500, color: '#94a3b8' }}>
+    <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '10px' }}>
+      <label style={{ fontSize: '0.9em', fontWeight: 500, color: '#94a3b8', width: '140px', flexShrink: 0 }}>
         {label}
         <Tooltip text={tooltip} />
       </label>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>OOM/yr</span>
-        <input 
-          type="number" 
-          step="0.01" 
-          value={parseFloat(value.toFixed(3))} 
-          onChange={(e) => onChange(Number(e.target.value))} 
-          style={inputStyle} 
-        />
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>%/yr</span>
-        <input 
-          type="number" 
-          step="1" 
-          value={Math.round(percent)} 
-          onChange={(e) => onChange(Math.log10(Number(e.target.value) / 100 + 1))} 
-          style={inputStyle} 
-        />
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>Multiple</span>
-        <input 
-          type="number" 
-          step="0.1" 
-          value={parseFloat(multiple.toFixed(2))} 
-          onChange={(e) => onChange(Math.log10(Number(e.target.value)))} 
-          style={inputStyle} 
-        />
-      </div>
+      <input
+        type="number"
+        step={step}
+        value={displayValue}
+        onChange={(e) => handleChange(Number(e.target.value))}
+        style={inputStyle}
+      />
     </div>
   );
 };
@@ -99,11 +88,14 @@ function App() {
   // Straggler Mitigation
   const [stragglerStrategy, setStragglerStrategy] = useState('none') // none, threshold, redundancy
 
-  // The Longest Training Run Calculator
-  const [showLongestRunCalc, setShowLongestRunCalc] = useState(false)
+  // Maximum Training Duration
+  const [showMaxDuration, setShowMaxDuration] = useState(false)
+  const [growthUnit, setGrowthUnit] = useState('percent') // 'oom', 'percent', 'multiple'
   const [hwGrowth, setHwGrowth] = useState(Math.log10(1.37))
   const [swGrowth, setSwGrowth] = useState(Math.log10(3))
   const [investGrowth, setInvestGrowth] = useState(Math.log10(3.5))
+  const [manualMaxDays, setManualMaxDays] = useState(false)
+  const [manualMaxDaysValue, setManualMaxDaysValue] = useState(180)
 
   const [results, setResults] = useState<any>(null)
 
@@ -123,7 +115,7 @@ function App() {
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue])
 
   const calculate = () => {
     // 1. Memory Analysis
@@ -285,7 +277,8 @@ function App() {
     // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
     // Formula: L = 1 / (gH + gS + gI)
     const combinedGrowth = hwGrowth + swGrowth + investGrowth
-    const maxDays = (1 / (combinedGrowth * Math.LN10)) * 365
+    const computedMaxDays = (1 / (combinedGrowth * Math.LN10)) * 365
+    const maxDays = manualMaxDays ? manualMaxDaysValue : computedMaxDays
 
     // Compute max model sizes that fit on one node at each precision
     const maxParamsFP16 = (vramPerNode * 1e9) / 16
@@ -629,37 +622,98 @@ function App() {
         </section>
 
         <section>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowLongestRunCalc(!showLongestRunCalc)}>
-            <h3 style={{ margin: 0 }}>Max Run Duration Calculator {showLongestRunCalc ? '▼' : '▶'}</h3>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowMaxDuration(!showMaxDuration)}>
+            <h3 style={{ margin: 0 }}>Maximum Training Duration {showMaxDuration ? '▼' : '▶'}</h3>
           </div>
           <p style={{ fontSize: '0.8em', color: '#64748b', marginTop: '4px' }}>
-            Based on Epoch's "The Longest Training Run" research.
+            Based on Epoch's{' '}
+            <a href="https://epoch.ai/blog/the-longest-training-run" target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8' }}>The Longest Training Run</a>.
+            See their{' '}
+            <a href="https://epoch.ai/data/trends" target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8' }}>Trends dashboard</a>{' '}
+            for the latest growth rate estimates.
           </p>
-          {showLongestRunCalc && (
+          {showMaxDuration && (
             <div style={{ borderLeft: '2px solid #38bdf8', paddingLeft: '15px', marginBottom: '20px', marginTop: '1.5rem' }}>
-              <GrowthInput 
-                label="HW Growth" 
-                value={hwGrowth} 
-                onChange={setHwGrowth} 
-                tooltip="Rate of hardware FLOPs/dollar improvement." 
-              />
-              <GrowthInput 
-                label="SW Growth" 
-                value={swGrowth} 
-                onChange={setSwGrowth} 
-                tooltip="Rate of algorithmic efficiency / compute-saving software improvements." 
-              />
-              <GrowthInput 
-                label="Invest Growth" 
-                value={investGrowth} 
-                onChange={setInvestGrowth} 
-                tooltip="Rate of increase in total capital investment for training runs." 
-              />
-              
-              <p style={{ fontSize: '0.75em', color: '#64748b', marginTop: '15px' }}>
-                * High growth rates suggest shorter optimal runs, as delaying for better tech/budget becomes more attractive.
-                Calculated as L = 1 / Σ(OOM/yr).
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                <input type="checkbox" checked={manualMaxDays} onChange={(e) => setManualMaxDays(e.target.checked)} id="manualOverride" />
+                <label htmlFor="manualOverride" style={{ fontSize: '0.85em', color: '#94a3b8' }}>Manual override</label>
+                {manualMaxDays && (
+                  <input
+                    type="number"
+                    min="1"
+                    max="3650"
+                    step="1"
+                    value={manualMaxDaysValue}
+                    onChange={(e) => setManualMaxDaysValue(Number(e.target.value))}
+                    style={{ background: '#2a2a2a', color: '#e2e8f0', border: '1px solid #475569', padding: '6px 10px', borderRadius: '6px', width: '80px', fontSize: '0.9em', outline: 'none' }}
+                  />
+                )}
+                {manualMaxDays && <span style={{ fontSize: '0.85em', color: '#64748b' }}>days</span>}
+              </div>
+
+              {!manualMaxDays && (
+                <>
+                  <div style={{ display: 'flex', gap: '4px', marginBottom: '16px' }}>
+                    {(['percent', 'oom', 'multiple'] as const).map((u) => (
+                      <label key={u} style={{
+                        display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px',
+                        borderRadius: '6px', fontSize: '0.8em', cursor: 'pointer',
+                        background: growthUnit === u ? '#1e3a5f' : 'transparent',
+                        border: growthUnit === u ? '1px solid #38bdf8' : '1px solid #475569',
+                        color: growthUnit === u ? '#38bdf8' : '#94a3b8'
+                      }}>
+                        <input
+                          type="radio"
+                          name="growthUnit"
+                          value={u}
+                          checked={growthUnit === u}
+                          onChange={() => setGrowthUnit(u)}
+                          style={{ display: 'none' }}
+                        />
+                        {u === 'percent' ? '%/yr' : u === 'oom' ? 'OOM/yr' : '\u00d7/yr'}
+                      </label>
+                    ))}
+                  </div>
+                  <GrowthInput
+                    label="HW Growth"
+                    value={hwGrowth}
+                    onChange={setHwGrowth}
+                    tooltip="Rate of hardware FLOPs/dollar improvement."
+                    unit={growthUnit}
+                  />
+                  <GrowthInput
+                    label="SW Growth"
+                    value={swGrowth}
+                    onChange={setSwGrowth}
+                    tooltip="Rate of algorithmic efficiency / compute-saving software improvements."
+                    unit={growthUnit}
+                  />
+                  <GrowthInput
+                    label="Invest Growth"
+                    value={investGrowth}
+                    onChange={setInvestGrowth}
+                    tooltip="Rate of increase in total capital investment for training runs."
+                    unit={growthUnit}
+                  />
+                  <p style={{ fontSize: '0.75em', color: '#64748b', marginTop: '15px' }}>
+                    High growth rates imply shorter optimal runs — delaying for better tech/budget becomes more attractive.
+                  </p>
+                </>
+              )}
+
+              {results && (
+                <div style={{ marginTop: '12px', padding: '12px', background: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }}>
+                  <p style={{ margin: 0, fontSize: '0.85em', color: '#94a3b8' }}>
+                    Maximum practical training run
+                  </p>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '1.3em', fontWeight: 700, color: '#38bdf8' }}>
+                    {results.maxDays} days
+                    <span style={{ fontSize: '0.6em', fontWeight: 400, color: '#64748b', marginLeft: '8px' }}>
+                      ({(Number(results.maxDays) / 30.44).toFixed(1)} months)
+                    </span>
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </section>
