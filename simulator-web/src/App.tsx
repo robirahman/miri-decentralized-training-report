@@ -5,20 +5,22 @@ const GrowthInput = ({ label, value, onChange }: { label: string, value: number,
   const percent = (multiple - 1) * 100;
 
   const inputStyle = {
-    background: '#1a1a1a',
-    color: 'white',
-    border: '1px solid #646cff',
-    padding: '5px',
-    borderRadius: '4px',
-    width: '100%',
+    background: '#2a2a2a',
+    color: '#e2e8f0',
+    border: '1px solid #475569',
+    padding: '6px 10px',
+    borderRadius: '6px',
+    width: '80px',
+    fontSize: '0.9em',
+    outline: 'none',
     boxSizing: 'border-box' as const
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr 1fr', gap: '10px', alignItems: 'end', marginBottom: '15px' }}>
-      <label style={{ paddingBottom: '8px', fontSize: '0.9em' }}>{label}</label>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-        <span style={{ fontSize: '0.7em', color: '#aaa' }}>OOM/yr</span>
+    <div style={{ display: 'grid', gridTemplateColumns: '140px 100px 100px 100px', gap: '15px', alignItems: 'center', marginBottom: '12px' }}>
+      <label style={{ fontSize: '0.9em', fontWeight: 500, color: '#94a3b8' }}>{label}</label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>OOM/yr</span>
         <input 
           type="number" 
           step="0.01" 
@@ -27,8 +29,8 @@ const GrowthInput = ({ label, value, onChange }: { label: string, value: number,
           style={inputStyle} 
         />
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-        <span style={{ fontSize: '0.7em', color: '#aaa' }}>%/yr</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>%/yr</span>
         <input 
           type="number" 
           step="1" 
@@ -37,8 +39,8 @@ const GrowthInput = ({ label, value, onChange }: { label: string, value: number,
           style={inputStyle} 
         />
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-        <span style={{ fontSize: '0.7em', color: '#aaa' }}>Multiple</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <span style={{ fontSize: '0.65em', color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>Multiple</span>
         <input 
           type="number" 
           step="0.1" 
@@ -84,9 +86,9 @@ function App() {
 
   // The Longest Training Run Calculator
   const [showLongestRunCalc, setShowLongestRunCalc] = useState(false)
-  const [hwGrowth, setHwGrowth] = useState(0.37)
-  const [swGrowth, setSwGrowth] = useState(2.0)
-  const [investGrowth, setInvestGrowth] = useState(2.5)
+  const [hwGrowth, setHwGrowth] = useState(Math.log10(1.37))
+  const [swGrowth, setSwGrowth] = useState(Math.log10(3))
+  const [investGrowth, setInvestGrowth] = useState(Math.log10(3.5))
 
   const [results, setResults] = useState<any>(null)
 
@@ -255,7 +257,6 @@ function App() {
               step="10" 
               value={parameters / 1e9} 
               onChange={(e) => setParameters(Number(e.target.value) * 1e9)} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>B</span>
           </div>
@@ -268,7 +269,6 @@ function App() {
               step="0.1" 
               value={tokens / 1e12} 
               onChange={(e) => setTokens(Number(e.target.value) * 1e12)} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>T</span>
           </div>
@@ -285,7 +285,6 @@ function App() {
               step="1" 
               value={numNodes} 
               onChange={(e) => setNumNodes(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>Nodes</span>
           </div>
@@ -298,7 +297,6 @@ function App() {
               step="10" 
               value={bandwidthMbps} 
               onChange={(e) => setBandwidthMbps(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>Mbps</span>
           </div>
@@ -311,7 +309,6 @@ function App() {
               step="10" 
               value={latencyMs} 
               onChange={(e) => setLatencyMs(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>ms</span>
           </div>
@@ -324,7 +321,6 @@ function App() {
               step="8" 
               value={vramPerNode} 
               onChange={(e) => setVramPerNode(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>GB</span>
           </div>
@@ -337,7 +333,6 @@ function App() {
               step="1" 
               value={pflopsPerNode} 
               onChange={(e) => setPflopsPerNode(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>PFLOPS</span>
           </div>
@@ -350,7 +345,6 @@ function App() {
               step="1" 
               value={mfu * 100} 
               onChange={(e) => setMfu(Number(e.target.value) / 100)} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>%</span>
           </div>
@@ -363,11 +357,11 @@ function App() {
 
         <section>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <h3>Hierarchical Sync</h3>
+            <h3 style={{ margin: 0 }}>Hierarchical Sync</h3>
             <input type="checkbox" checked={useHierarchy} onChange={(e) => setUseHierarchy(e.target.checked)} />
           </div>
           {useHierarchy && (
-            <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px' }}>
+            <div style={{ borderLeft: '2px solid #38bdf8', paddingLeft: '15px', marginTop: '1.5rem' }}>
               <div className="input-group">
                 <label>Group Nodes:</label>
                 <input 
@@ -377,7 +371,6 @@ function App() {
                   step="1" 
                   value={nodesPerGroup} 
                   onChange={(e) => setNodesPerGroup(Number(e.target.value))} 
-                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
                 />
                 <span>Nodes</span>
               </div>
@@ -390,7 +383,6 @@ function App() {
                   step="100" 
                   value={regionalBandwidth} 
                   onChange={(e) => setRegionalBandwidth(Number(e.target.value))} 
-                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
                 />
                 <span>Mbps</span>
               </div>
@@ -403,7 +395,6 @@ function App() {
                   step="1" 
                   value={regionalLatency} 
                   onChange={(e) => setRegionalLatency(Number(e.target.value))} 
-                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
                 />
                 <span>ms</span>
               </div>
@@ -416,7 +407,6 @@ function App() {
                   step="1" 
                   value={regionalSteps} 
                   onChange={(e) => setRegionalSteps(Number(e.target.value))} 
-                  style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
                 />
                 <span>Steps</span>
               </div>
@@ -428,12 +418,12 @@ function App() {
           <h3>Algorithm Settings</h3>
           <div className="input-group">
             <label>Precision:</label>
-            <select value={precision} onChange={(e) => setPrecision(e.target.value)} style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}>
+            <select value={precision} onChange={(e) => setPrecision(e.target.value)}>
               <option value="FP16">FP16 / BF16 (2 bytes)</option>
               <option value="FP8">FP8 (1 byte)</option>
               <option value="FP4">FP4 (0.5 byte)</option>
             </select>
-            <span>{precision}</span>
+            <span>Precision</span>
           </div>
           <div className="input-group">
             <label>Inner Steps (Local):</label>
@@ -444,7 +434,6 @@ function App() {
               step="1" 
               value={innerSteps} 
               onChange={(e) => setInnerSteps(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>Steps</span>
           </div>
@@ -457,7 +446,6 @@ function App() {
               step="1" 
               value={compression} 
               onChange={(e) => setCompression(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>x</span>
           </div>
@@ -470,7 +458,6 @@ function App() {
               step="1" 
               value={ppCompression} 
               onChange={(e) => setPpCompression(Number(e.target.value))} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             />
             <span>x</span>
           </div>
@@ -479,30 +466,29 @@ function App() {
             <select 
               value={stragglerStrategy} 
               onChange={(e) => setStragglerStrategy(e.target.value)} 
-              style={{ background: '#1a1a1a', color: 'white', border: '1px solid #646cff', padding: '5px', borderRadius: '4px' }}
             >
               <option value="none">None (Blocking)</option>
               <option value="threshold">Threshold (90% cut-off)</option>
               <option value="redundancy">Backup Workers (10% extra)</option>
             </select>
-            <span style={{ fontSize: '0.7em', color: '#aaa' }}>Strategy</span>
+            <span>Strategy</span>
           </div>
         </section>
 
         <section>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowLongestRunCalc(!showLongestRunCalc)}>
-            <h3>Max Run Duration Calculator {showLongestRunCalc ? '▼' : '▶'}</h3>
+            <h3 style={{ margin: 0 }}>Max Run Duration Calculator {showLongestRunCalc ? '▼' : '▶'}</h3>
           </div>
-          <p style={{ fontSize: '0.8em', color: '#aaa', marginTop: '-10px' }}>
+          <p style={{ fontSize: '0.8em', color: '#64748b', marginTop: '4px' }}>
             Based on Epoch's "The Longest Training Run" research.
           </p>
           {showLongestRunCalc && (
-            <div style={{ borderLeft: '2px solid #646cff', paddingLeft: '15px', marginBottom: '20px', marginTop: '10px' }}>
+            <div style={{ borderLeft: '2px solid #38bdf8', paddingLeft: '15px', marginBottom: '20px', marginTop: '1.5rem' }}>
               <GrowthInput label="HW Growth" value={hwGrowth} onChange={setHwGrowth} />
               <GrowthInput label="SW Growth" value={swGrowth} onChange={setSwGrowth} />
               <GrowthInput label="Invest Growth" value={investGrowth} onChange={setInvestGrowth} />
               
-              <p style={{ fontSize: '0.75em', color: '#888', marginTop: '10px' }}>
+              <p style={{ fontSize: '0.75em', color: '#64748b', marginTop: '15px' }}>
                 * High growth rates suggest shorter optimal runs, as delaying for better tech/budget becomes more attractive.
                 Calculated as L = 1 / Σ(OOM/yr).
               </p>
@@ -511,40 +497,42 @@ function App() {
         </section>
 
         {results && (
-          <div className="results-card" style={{ border: results.isSharded ? '2px solid #646cff' : 'none' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2>Results</h2>
-              <span style={{ background: '#646cff', padding: '4px 12px', borderRadius: '20px', fontSize: '0.8em' }}>
-                Mode: {results.mode}
+          <div className="results-card" style={{ borderTop: results.isSharded ? '4px solid #38bdf8' : '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h2 style={{ margin: 0 }}>Results</h2>
+              <span style={{ background: '#38bdf8', color: '#0f172a', padding: '4px 12px', borderRadius: '20px', fontSize: '0.75em', fontWeight: 700, textTransform: 'uppercase' }}>
+                {results.mode}
               </span>
             </div>
             
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
               <div>
-                <p><strong>Total Training Time:</strong></p>
-                <h1 style={{ color: results.days < 365 ? '#4caf50' : '#ff4444', margin: 0 }}>{results.days} Days</h1>
-                <p>{results.feasibility}</p>
-                <p style={{ fontSize: '0.8em', color: '#aaa' }}>Includes {results.efficiency}% algorithmic efficiency</p>
-                <p style={{ fontSize: '0.8em', color: '#aaa' }}>
-                  Global MFU: <span style={{ color: results.globalMfu < 20 ? '#ff4444' : '#aaa' }}>{results.globalMfu}%</span> | 
-                  HFU: {results.globalHfu}%
-                </p>
+                <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.9em' }}>Total Training Time</p>
+                <h1 style={{ color: results.days < 365 ? '#10b981' : '#f43f5e', margin: 0 }}>{results.days} Days</h1>
+                <p style={{ fontWeight: 600, marginTop: '8px' }}>{results.feasibility}</p>
+                <div style={{ fontSize: '0.85em', color: '#64748b', marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <span>{results.efficiency}% algorithmic efficiency</span>
+                  <span>Global MFU: <span style={{ color: results.globalMfu < 20 ? '#f43f5e' : '#94a3b8' }}>{results.globalMfu}%</span> | HFU: {results.globalHfu}%</span>
+                </div>
                 {results.globalMfu < 20 && (
-                  <p style={{ fontSize: '0.7em', color: '#ff4444' }}>
+                  <p style={{ fontSize: '0.75em', color: '#f43f5e', marginTop: '12px' }}>
                     * Inefficient run: Communication overhead or algorithmic penalty is dominating.
                   </p>
                 )}
               </div>
-              <div>
-                <p><strong>Bottleneck:</strong> {results.bottleneck}</p>
-                <p>Global Sync: {results.globalCommSec}s</p>
-                {useHierarchy && <p>Regional Sync: {results.regionalCommSec}s</p>}
-                <p>Compute Block: {results.computeBlockSec}s</p>
+              
+              <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
+                <p style={{ color: '#94a3b8', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 600 }}>Bottleneck: {results.bottleneck}</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.85em', color: '#cbd5e1' }}>
+                  <p style={{ margin: 0 }}>Global Sync: {results.globalCommSec}s</p>
+                  {useHierarchy && <p style={{ margin: 0 }}>Regional Sync: {results.regionalCommSec}s</p>}
+                  <p style={{ margin: 0 }}>Compute Block: {results.computeBlockSec}s</p>
+                </div>
               </div>
             </div>
             
             {results.isSharded && (
-              <div style={{ marginTop: '10px', fontSize: '0.9em', color: '#aaa', maxWidth: '100%', overflowWrap: 'break-word' }}>
+              <div style={{ marginTop: '20px', fontSize: '0.8em', color: '#64748b', maxWidth: '100%', overflowWrap: 'break-word', fontStyle: 'italic' }}>
                 * Model exceeds single-node VRAM. Pipeline Parallelism is active. 
                 Network latency adds idle time to every micro-batch handover.
               </div>
