@@ -127,7 +127,7 @@ function App() {
 
   const calculate = () => {
     // 1. Memory Analysis
-    const bytesPerParam = precision === 'FP16' ? 12 : precision === 'FP8' ? 8 : 6
+    const bytesPerParam = precision === 'FP16' ? 16 : precision === 'FP8' ? 14 : 13
     // Memory always depends on TOTAL parameters
     const isSharded = (parameters * bytesPerParam) > (vramPerNode * 1e9)
     const ppStages = Math.ceil((parameters * bytesPerParam) / (vramPerNode * 1e9))
@@ -221,7 +221,7 @@ function App() {
     } else {
       // --- Pipeline Parallel Mode ---
       mode = `PP (${ppStages} stages)` + (isMoE ? " + MoE" : "")
-      const hiddenDim = 0.004 * Math.sqrt(parameters)
+      const hiddenDim = 0.03 * Math.sqrt(parameters)
       const activationBits = (localBatch * hiddenDim * 2 * 8) / ppCompression
       
       const commPerMicroSec = (2 * activationBits / microBatches) / (bandwidthMbps * 1e6)
@@ -247,7 +247,7 @@ function App() {
     // Global Utilization Metrics (End-to-End)
     // Theoretical FLOPs = 6 * parameters * tokens
     // Hardware Max FLOPs = numNodes * pflopsPerNode * 1e15 * effectiveSeconds
-    const theoreticalFlops = 6 * parameters * (tokens)
+    const theoreticalFlops = 6 * computeParams * tokens
     const hardwareMaxFlops = numNodes * (pflopsPerNode * 1e15) * effectiveSeconds
     const globalMfu = (theoreticalFlops / hardwareMaxFlops)
     const globalHfu = globalMfu / 0.8 // MFU is ~80% of HFU per research
@@ -255,7 +255,7 @@ function App() {
     // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
     // Formula: L = 1 / (gH + gS + gI)
     const combinedGrowth = hwGrowth + swGrowth + investGrowth
-    const maxDays = (1 / combinedGrowth) * 365
+    const maxDays = (1 / (combinedGrowth * Math.LN10)) * 365
 
     setResults({
       mode,
