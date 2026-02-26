@@ -313,10 +313,19 @@ function App() {
       maxParamsFP16: (maxParamsFP16 / 1e9).toFixed(0),
       maxParamsFP8: (maxParamsFP8 / 1e9).toFixed(0),
       maxParamsFP4: (maxParamsFP4 / 1e9).toFixed(0),
+      hardwareFlops: hardwareMaxFlops,
+      localEquivFlops: theoreticalFlops,
       maxDays: maxDays.toFixed(0),
       bottleneck: (globalCommSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
       feasibility: effectiveDays < maxDays ? "Feasible" : `Impractical (>${maxDays.toFixed(0)} days)`
     })
+  }
+
+  const formatFlops = (flops: number) => {
+    if (flops <= 0 || !isFinite(flops)) return '\u2014'
+    const exp = Math.floor(Math.log10(flops))
+    const mantissa = flops / Math.pow(10, exp)
+    return `${mantissa.toFixed(2)} \u00d7 10^${exp}`
   }
 
   return (
@@ -752,7 +761,28 @@ function App() {
                 </div>
               </div>
             </div>
-            
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginTop: '20px' }}>
+              <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
+                <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Hardware FLOPs Performed
+                  <Tooltip text="Total FLOPs burned by all hardware over the training run, including idle time, pipeline bubbles, straggler waits, and activation recomputation." />
+                </p>
+                <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#e2e8f0' }}>
+                  {formatFlops(results.hardwareFlops)} FLOP
+                </p>
+              </div>
+              <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
+                <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Local-Equivalent Compute
+                  <Tooltip text="Compute needed to train the same model to the same performance on a single ideal cluster with no distributed training overhead (no DiLoCo penalty, no compression loss, no straggler waste, no pipeline bubbles)." />
+                </p>
+                <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#e2e8f0' }}>
+                  {formatFlops(results.localEquivFlops)} FLOP
+                </p>
+              </div>
+            </div>
+
             {results.epReducedMemory && (
               <div style={{ marginTop: '20px', padding: '15px', background: '#0f2318', border: '1px solid #166534', borderRadius: '10px' }}>
                 <p style={{ color: '#86efac', margin: '0 0 8px 0', fontSize: '0.85em', fontWeight: 700 }}>
