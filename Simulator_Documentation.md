@@ -133,10 +133,10 @@ Used when the model fits in a single node's VRAM. Each node trains independently
 
 #### Communication Volume per Sync
 
-$$V_{\text{bits}} = \frac{P \cdot 16}{C_r}$$
+$$V_{\text{bits}} = \frac{P \cdot B_{\text{precision}}}{C_r}$$
 
-*   $P \cdot 16$: each parameter produces one FP16 pseudo-gradient value (16 bits).
-*   $C_r$: compression ratio (from quantization, sparsification, or both).
+*   $B_{\text{precision}}$: bits per pseudo-gradient value, determined by compute precision (16 for FP16, 8 for FP8, 4 for FP4). Pseudo-gradients are cast to compute precision before transmission.
+*   $C_r$: additional compression ratio (from quantization, sparsification, or both), applied on top of the precision-based reduction.
 
 **Assumption:** Pseudo-gradients (the difference $\theta_{\text{local}} - \theta_{\text{original}}$) have the same dimensionality as the model parameters — one scalar per parameter — so the communication volume is identical whether sending weights or pseudo-gradients.
 
@@ -201,11 +201,11 @@ Used when the model exceeds a single node's VRAM. The model is partitioned acros
 
 #### Activation Size (per layer boundary)
 
-$$A = B_{\text{local}} \cdot h \cdot 2 \text{ bytes}$$
+$$A = B_{\text{local}} \cdot h \cdot \frac{B_{\text{precision}}}{8} \text{ bytes}$$
 
 *   $B_{\text{local}}$ = local batch size **in tokens** (not sequences). This equals $\text{num\_sequences} \times \text{seq\_length}$ (e.g. $32 \times 4096 = 131{,}072$).
 *   $h$ = hidden dimension.
-*   $2$ = bytes per element (FP16).
+*   $B_{\text{precision}} / 8$ = bytes per element (2 for FP16, 1 for FP8, 0.5 for FP4).
 
 Since $B_{\text{local}}$ is measured in tokens, the formula correctly accounts for sequence length. The activation tensor at a pipeline boundary is shaped $[\text{num\_sequences}, \text{seq\_length}, h]$, and the total number of elements is $\text{num\_sequences} \times \text{seq\_length} \times h = B_{\text{local}} \times h$.
 
@@ -402,15 +402,15 @@ $$L = \frac{1}{(g_H + g_S + g_I) \cdot \ln(10)} \text{ years}$$
 
 ### 8.1 Precision Effect on Communication
 
-Lower compute precision implicitly reduces communication volume:
+Lower compute precision reduces communication volume for both pseudo-gradients (Section 3.1) and pipeline activations (Section 3.3). The $B_{\text{precision}}$ parameter in those formulas is determined by the precision setting:
 
-| Precision | Bytes/Param (comm) | Implicit Bandwidth Savings vs FP16 |
-| :--- | :--- | :--- |
-| FP16/BF16 | 2 | 1× (baseline) |
-| FP8 | 1 | 2× |
-| FP4 | 0.5 | 4× |
+| Precision | $B_{\text{precision}}$ (bits) | Bytes/Value | Bandwidth Savings vs FP16 |
+| :--- | :--- | :--- | :--- |
+| FP16/BF16 | 16 | 2 | 1× (baseline) |
+| FP8 | 8 | 1 | 2× |
+| FP4 | 4 | 0.5 | 4× |
 
-The simulator auto-adjusts both weight compression and activation compression when precision changes.
+This precision-based reduction is **independent of** the user-specified compression ratio $C_r$. The total effective compression from FP16 baseline is $(16 / B_{\text{precision}}) \times C_r$.
 
 ### 8.2 Additional Compression
 

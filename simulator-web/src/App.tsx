@@ -100,26 +100,13 @@ function App() {
   const [results, setResults] = useState<any>(null)
 
   useEffect(() => {
-    // Sync compression based on precision
-    if (precision === 'FP8') {
-      setCompression(2)
-      setPpCompression(2)
-    } else if (precision === 'FP4') {
-      setCompression(4)
-      setPpCompression(4)
-    } else {
-      setCompression(1)
-      setPpCompression(1)
-    }
-  }, [precision])
-
-  useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue, precision])
 
   const calculate = () => {
     // 1. Memory Analysis
     const bytesPerParam = precision === 'FP16' ? 16 : precision === 'FP8' ? 14 : 13
+    const bytesPerValue = precision === 'FP16' ? 2 : precision === 'FP8' ? 1 : 0.5
 
     // For MoE with EP: each node stores shared params + (expert params / EP degree)
     const expertParams = isMoE ? (parameters - activeParams) : 0
@@ -182,7 +169,7 @@ function App() {
 
     if (!isSharded) {
       // --- Data Parallel / EP Mode ---
-      const payloadBits = (parameters * 2 * 8) / compression
+      const payloadBits = (parameters * bytesPerValue * 8) / compression
       
       if (useHierarchy) {
         mode = isMoE ? "Hierarchical MoE" : "Hierarchical DiLoCo"
@@ -224,7 +211,7 @@ function App() {
       // When hierarchy is enabled, PP groups use regional interconnect.
       const numGroups = Math.floor(effectiveNodes / ppStages)
       const hiddenDim = 0.03 * Math.sqrt(parameters)
-      const activationBits = (localBatch * hiddenDim * 2 * 8) / ppCompression
+      const activationBits = (localBatch * hiddenDim * bytesPerValue * 8) / ppCompression
 
       // PP intra-group uses regional interconnect if hierarchy enabled, else WAN
       const ppBandwidth = useHierarchy ? regionalBandwidth : bandwidthMbps
@@ -248,7 +235,7 @@ function App() {
       } else {
         // PP-Group DiLoCo: DiLoCo outer loop across groups
         mode = `PP-Group DiLoCo (${ppStages}×${numGroups})` + (isMoE ? " + MoE" : "")
-        const payloadBits = (parameters * 2 * 8) / compression
+        const payloadBits = (parameters * bytesPerValue * 8) / compression
         computeBlockSec = innerSteps * ppStepTime
         globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
 
