@@ -525,7 +525,7 @@ The techniques documented below are architectural and algorithmic improvements t
 
 They are documented here so that policymakers are aware that decentralized training capabilities could improve in the future as these techniques mature and are validated at scale. Each entry notes the scale at which the technique has been tested, which is typically 2–3 orders of magnitude smaller than the simulator's target regime.
 
-All findings are from the February 2026 literature review (see `Bibliography/Papers_to_Study.md`, Section 5).
+All findings are from the February 2026 literature review (see `Bibliography.md`).
 
 ### B.1 Zero Bubble Pipeline Scheduling
 
