@@ -80,7 +80,7 @@ The $\alpha$ coefficient decreases with model size, reflecting the empirical fin
 | 16x (FP4 + 4x sparse) | 1.00 | 0.98 | 0.95 | FP4 component validated; sparsification at 25% tested at 512M ([SparseLoCo](https://arxiv.org/abs/2508.15706)) |
 | 100x (2-bit + TopK or FP4 + 25x) | 0.99 | 0.95 | 0.90 | Validated only at 512M-1B; significant extrapolation to 100B+ |
 
-The "expected" scenario is used as the primary estimate throughout this analysis, with optimistic/conservative ranges noted where they materially affect conclusions. See Section 10 for the full literature review underlying these estimates.
+The "expected" scenario is used as the primary estimate throughout this analysis, with optimistic/conservative ranges noted where they materially affect conclusions. See [Compression Quality](Compression_Quality.md) for the full literature review underlying these estimates.
 
 **Activation compression quality ($\eta_{\text{act-compression}}$, PP-Group DiLoCo only):** In PP-Group DiLoCo, hidden-state activation tensors are transferred between pipeline stages at every micro-batch. These can be compressed (e.g., 4-bit quantization), but unlike pseudo-gradient errors (which average across replicas), activation errors accumulate through the pipeline — each stage boundary introduces error in both the forward and backward passes:
 
@@ -95,7 +95,7 @@ where $S$ is the number of pipeline stages and $q_{\text{per-boundary}}$ is the 
 | 4x (4-bit adaptive) | 1.00 | 0.995 | 0.98 | Near-lossless ([TAH-Quant](https://arxiv.org/abs/2506.06984), [GACT](https://proceedings.mlr.press/v162/liu22v.html)) |
 | 10x (structural) | 0.995 | 0.98 | 0.95 | Requires subspace methods; validated at 8B ([Protocol Models](https://arxiv.org/abs/2504.01943)) |
 
-The default activation compression ratio is **4x** (4-bit quantization), which is well-validated in the literature. At 4x with 2 pipeline stages, $\eta_{\text{act}} = 0.995^2 = 0.990$; at 4x with 4 stages, $\eta_{\text{act}} = 0.995^6 = 0.970$. See Section 10.6 for the literature review.
+The default activation compression ratio is **4x** (4-bit quantization), which is well-validated in the literature. At 4x with 2 pipeline stages, $\eta_{\text{act}} = 0.995^2 = 0.990$; at 4x with 4 stages, $\eta_{\text{act}} = 0.995^6 = 0.970$. See [Compression Quality §6](Compression_Quality.md#6-activation-compression-evidence-for-pp-group-diloco) for the literature review.
 
 **Replica count penalty ($\eta_{\text{replicas}}$):** Averaging pseudo-gradients across many replicas introduces noise. Based on the [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) empirical data (M=8 costs ~1.2% at 2.4B parameters, with the penalty decreasing at larger model sizes), this factor is modeled as:
 
@@ -310,7 +310,7 @@ Nine configurations are compared, all using sub-CCC nodes over 100 Mbps WAN. All
 
 Hierarchical configurations use groups of 8 nodes with 1 Gbps regional interconnect and 20 ms latency (co-located nodes within the same facility or metro area). PP-Group DiLoCo configurations use co-located pipeline groups on regional interconnect, with 4x activation compression. The 100x pseudo-gradient compression ratio corresponds to FP4 quantization combined with aggressive sparsification, as demonstrated in [Streaming DiLoCo](https://arxiv.org/abs/2501.18512).
 
-**Compression quality uncertainty for 100x configurations (E, F):** Under the optimistic scenario, Config F achieves 1.12 x 10^27; under the conservative scenario, it drops to 1.01 x 10^27. The 100x compression assumptions carry significant uncertainty (see Section 10), so these estimates should be treated as bounds rather than point predictions.
+**Compression quality uncertainty for 100x configurations (E, F):** Under the optimistic scenario, Config F achieves 1.12 x 10^27; under the conservative scenario, it drops to 1.01 x 10^27. The 100x compression assumptions carry significant uncertainty (see [Compression Quality](Compression_Quality.md)), so these estimates should be treated as bounds rather than point predictions.
 
 ### 8.2 Key Findings
 
@@ -324,7 +324,7 @@ Hierarchical configurations use groups of 8 nodes with 1 Gbps regional interconn
 
 **Hierarchical DiLoCo improves efficiency by 3 percentage points.** At N=4,000, flat DiLoCo achieves $\eta = 0.853$ with $H_{\min} = 244$, while hierarchical DiLoCo achieves $\eta = 0.883$ with $H_{\text{eff}} = 65$. The improvement comes from regional syncs over 1 Gbps LAN, which keep $H_{\text{inner}}$ low (18 steps) while the global sync interval is hidden behind regional cycles.
 
-**100x pseudo-gradient compression reduces $H_{\min}$ dramatically but carries more uncertainty.** With 100x compression (vs 16x baseline), sync volume drops from 240 Gbit to 38 Gbit per direction, reducing $H_{\min}$ from 244 to 39 at N=4,000. This improves $\eta_H$ from 0.871 to 0.914. However, the pseudo-gradient compression quality factor ($\eta_{\text{pg-compression}} = 0.95$ expected, vs 0.98 for 16x) partially offsets this gain. The net expected efficiency for Config E is 0.868 — an improvement over Config A (0.853) but not as dramatic as the $\eta_H$ improvement alone would suggest. The 100x compression assumption is based on limited empirical evidence (see Section 10) and represents the least certain component of the analysis.
+**100x pseudo-gradient compression reduces $H_{\min}$ dramatically but carries more uncertainty.** With 100x compression (vs 16x baseline), sync volume drops from 240 Gbit to 38 Gbit per direction, reducing $H_{\min}$ from 244 to 39 at N=4,000. This improves $\eta_H$ from 0.871 to 0.914. However, the pseudo-gradient compression quality factor ($\eta_{\text{pg-compression}} = 0.95$ expected, vs 0.98 for 16x) partially offsets this gain. The net expected efficiency for Config E is 0.868 — an improvement over Config A (0.853) but not as dramatic as the $\eta_H$ improvement alone would suggest. The 100x compression assumption is based on limited empirical evidence (see [Compression Quality](Compression_Quality.md)) and represents the least certain component of the analysis.
 
 **The combined best case for raw throughput (Config F)** uses hierarchical DiLoCo, 100x pseudo-gradient compression, and FP8 H100 nodes to achieve **1.07 x 10^27 C_local** (expected). However, its C_quality is only 2.42 x 10^25 due to extreme overtraining of the 91B model. **For quality-adjusted compute, Config H (PP-DiLoCo 960B)** is optimal at 2.75 x 10^26 C_quality.
 
@@ -491,108 +491,11 @@ The sensitivity analysis reveals three governance-critical findings:
 
 **3. Network-level enforcement is ineffective.** Even if bandwidth restrictions were perfectly enforced, the 12-14% reduction in achievable compute is small relative to the order-of-magnitude exceedance of the Strict Threshold. An evader using consumer broadband loses at most 12-14% of compute versus an optimized local deployment — a minor penalty that does not change whether the threshold is exceeded or by how much. The effective enforcement mechanisms remain chip tracking, financial monitoring, and physical detection of GPU concentrations.
 
-## 10. Compression Quality: Evidence, Extrapolation, and Open Questions
-
-The efficiency model in Section 4.2 includes compression quality factors that reduce C_local by 2-10% depending on the compression ratio and scenario. This section presents the evidence underlying those estimates. The analysis distinguishes three types of compression:
-
-1. **Pseudo-gradient compression** (DiLoCo sync): Weight deltas (pseudo-gradients) are quantized and sparsified before transmission across WAN every H inner steps. This is the primary compression type in all modes. 16x default, 100x aggressive.
-2. **Activation compression** (PP-Group DiLoCo only): Hidden-state activation tensors are compressed between pipeline stages at every micro-batch. Occurs only when the model is sharded across multiple co-located nodes. 4x default.
-3. **Precision reduction** (FP16 → FP8): Training compute precision. Affects throughput, memory, and the base communication volume, but is not a separate quality factor — FP8 training quality is well-validated and treated as lossless.
-
-### 10.1 What the Simulator Assumes
-
-The simulator's compression quality model applies multiplicative factors to efficiency:
-
-$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}} \times \eta_{\text{act-compression}}$$
-
-where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). The sync interval penalty ($\eta_H$) is the dominant term and is well-calibrated against empirical data (DiLoCo Scaling Laws, 2503.09799). The pseudo-gradient compression quality ($\eta_{\text{pg-compression}}$), replica penalty ($\eta_{\text{replicas}}$), and activation compression quality ($\eta_{\text{act-compression}}$) are estimated from the literature with varying levels of confidence.
-
-**What the simulator does NOT model:**
-- Error feedback (the mechanism for accumulating compression residuals) — whether it is used or needed
-- Interaction effects between compression, replica count, and H
-- Compression-induced outlier accumulation over long training runs
-- The specific choice of compressor (TopK vs random-K, linear vs statistical quantization)
-
-### 10.2 Pseudo-Gradient Compression: Empirical Evidence
-
-| Paper | Scale | Compression | Quality Impact | Notes |
-|:--|:--|:--|:--|:--|
-| [Streaming DiLoCo](https://arxiv.org/abs/2501.18512) (DeepMind, 2025) | 500M-4B, M=2, H=100 | FP4 (E3M0) pseudo-grads | **None detected** | No error feedback; 400x total bandwidth reduction |
-| [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) (DeepMind, 2025) | 35M-10B, M=1-8 | None (tests H only) | M=8 at 2.4B: +1.2% loss | Penalty decreases with model size |
-| [MuLoCo](https://arxiv.org/abs/2505.23725) (2025) | 150M-15B, K=8-16 | 8-bit, 4-bit, 2-bit | 4-bit: lossless; 2-bit+EF: near-lossless | Error feedback critical at 2-bit |
-| [SparseLoCo](https://arxiv.org/abs/2508.15706) (2025) | 512M-2B, R=8-16 | TopK 3% + 2-bit (~50-100x) | **Beats vanilla DiLoCo** at 3% density | Error feedback essential; regularizing effect |
-| [INTELLECT-1](https://arxiv.org/abs/2412.01152) (Prime Intellect, 2024) | 10B, 14 nodes | int8 pseudo-grads (400x total) | Negligible | Real-world WAN validation |
-| [DiLoCoX](https://arxiv.org/abs/2506.21263) (0G Labs, 2025) | 107B, 20 nodes | Low-rank + int4 | 0.3 loss gap vs AllReduce | First 100B+ DiLoCo experiment |
-| [Deep Gradient Compression](https://arxiv.org/abs/1712.01887) (Lin, 2018) | ResNet-50, DeepSpeech | Up to 600x | Lossless with error feedback | Vision/speech models, not LLMs |
-| [Aragani et al.](https://arxiv.org/abs/2502.07634) (2025) | LSTMs, transformers | TopK/DGC up to 5000x | 50x can improve via regularization; >5000x degrades | |
-
-### 10.3 What Is Validated vs. Extrapolated
-
-**Well-validated (high confidence):**
-- FP4 (4-bit) pseudo-gradient quantization is lossless at up to 4B parameters with H=100 and 2 replicas (Streaming DiLoCo)
-- 4-bit quantization is lossless at up to 15B parameters with 16 replicas (MuLoCo)
-- DiLoCo's efficiency penalty decreases with model size (confirmed 35M-10B, DiLoCo Scaling Laws)
-- int8 compression works in practice over real WAN at 10B (INTELLECT-1)
-
-**Partially validated (medium confidence):**
-- 16x compression (FP4 + 4x sparsification): the FP4 component is well-validated; the sparsification component is tested at 512M (SparseLoCo) but not at 100B+
-- DiLoCo at 100B+ scale: DiLoCoX demonstrates feasibility but shows a 0.3 loss gap versus AllReduce
-
-**Extrapolated (low-medium confidence):**
-- 100x compression at 100B+ scale: only validated at 512M-1B; extrapolation spans ~100x in model size
-- 2000+ replicas: largest empirical test is M=16 (MuLoCo); [Epoch AI projects](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale) that 10,000 nodes would require ~6x FLOP for equivalent quality
-- H=200-2000 combined with aggressive compression: largest tested is H=125 with compression (DiLoCoX at 107B)
-
-### 10.4 Key Risk Factors
-
-**Error feedback:** At 2-bit compression and below, error feedback (accumulating the difference between the original and compressed value for the next sync) is critical for convergence. MuLoCo and SparseLoCo both find that error feedback is essential at aggressive compression ratios. However, the Streaming DiLoCo paper does **not** use error feedback, and its lossless results at FP4 may not extend to more aggressive compression without it. Error feedback adds memory overhead (one full model copy for the error buffer — ~3.8 TB additional for a 240B model) and is not included in the simulator's memory model.
-
-**Compounding unknowns:** The scenarios in Section 8 combine multiple factors that have not been tested jointly: (a) large models (91-240B), (b) many replicas (2,000+), (c) high H values (200-2000), and (d) aggressive compression (100x). Each factor has been studied somewhat independently, but the **interaction** is unknown. Even if each factor individually causes <5% degradation, compounding could produce larger effects.
-
-**Scale-dependent outliers:** Quantization during training is known to cause outlier accumulation over long training runs. At 100B+ scale with trillions of tokens, this could be worse than at 1B scale with billions of tokens. Recent work on FP4 training ([Quartet](https://arxiv.org/abs/2505.14669), 2025) shows that most loss gap arises from forward-pass quantization, not gradient quantization — but this applies to per-step gradients, not DiLoCo pseudo-gradients.
-
-### 10.5 Impact on Analysis Conclusions
-
-| Conclusion | Sensitivity to Compression Quality | Robust? |
-|:--|:--|:--|
-| 4 nodes exceed 10^24 (16x comp) | Low — conservative scenario still gives 9.52e23 | **Yes** |
-| 72 nodes achieve ~17x threshold (16x comp) | Low — range is 17.0-17.9x | **Yes** |
-| 500 nodes achieve 10^26 (16x comp) | Low — conservative gives 1.18e26 | **Yes** |
-| Config F achieves 10^27 (100x comp) | **Medium** — expected 1.07e27, conservative 1.01e27 | **Marginal** |
-| 10^27 at 10 Mbps + 100x (Config F) | **High** — conservative drops to ~9.8e26 | **Uncertain** |
-| Bandwidth reduction costs "only 3-6%" | **Medium** — actual total gap is 12-14% with compression quality | **Revised** |
-| Cost of evasion is $3M for 10^24 | None — cost is hardware, not compression-dependent | **Yes** |
-| Treaty modifications analysis | None — countermeasure effectiveness is independent | **Yes** |
-
-The most important revision is to the bandwidth sensitivity headline: the frequently cited "3-6% reduction" referred only to the $\eta_H$ penalty from larger H values, not the total efficiency gap including compression quality. With compression quality included, the total expected gap between optimal (1 Gbps, no compression penalty) and degraded (10 Mbps, expected compression quality) is **12-14%** for 16x compression and **14-18%** for 100x. The qualitative conclusion — that DiLoCo is robust to bandwidth constraints — remains valid, but the quantitative magnitude is larger.
-
-The core governance conclusions (Sections 6-7) are robust across all compression quality scenarios because they rely on 16x pseudo-gradient compression, which is well-validated. The 10^27 scenarios (Section 8) carry meaningful uncertainty, particularly Config F's 100x compression assumption, and should be interpreted as estimates with a +-10% error bar rather than precise predictions.
-
-### 10.6 Activation Compression: Evidence for PP-Group DiLoCo
-
-Activation compression (compressing hidden-state tensors between pipeline stages) is distinct from pseudo-gradient compression. The key difference: activation errors accumulate through the pipeline (each stage boundary introduces error in both forward and backward passes), while pseudo-gradient errors average across replicas.
-
-| Paper | Scale | Compression | Quality Impact | Notes |
-|:--|:--|:--|:--|:--|
-| [COAT](https://arxiv.org/abs/2410.19313) (ICLR 2025) | GPT-2, LLaMA-7B | FP8 activations (2x) | **Near-lossless** | Online dynamic quantization for all linear layers |
-| [SWARM](https://arxiv.org/abs/2301.11913) (ICML 2023) | 1-7B, distributed PP | FP8 activations (2x) | **Near-lossless** | Validated in heterogeneous distributed PP setting |
-| [TAH-Quant](https://arxiv.org/abs/2506.06984) (2025) | GPT-2 XL, Qwen2.5-3B | 4-bit adaptive (4x) | **Near-lossless** | Token-aware heterogeneous quantization |
-| [GACT](https://proceedings.mlr.press/v162/liu22v.html) (ICML 2022) | ResNet, BERT, GPT-2 | 4-bit (4x) → 8x memory | **<0.5% degradation** | Exact gradient computation with quantized activations |
-| [Protocol Models](https://arxiv.org/abs/2504.01943) (2025) | 8B Transformer | 100x (subspace decomposition) | **Lossless** | Decomposes activations into low-rank subspaces; not validated at 100B+ |
-
-**Safe defaults for WAN pipeline parallelism:**
-
-- **FP8 (2x):** Universally validated, no measurable quality loss. Suitable as a baseline.
-- **4-bit adaptive (4x):** Near-lossless per recent literature. The default in this analysis. Per-boundary quality: 0.995 (expected), compounding to 0.990 at 2 stages, 0.970 at 4 stages.
-- **10-16x:** Requires structural methods (subspace decomposition, protocol learning). Validated only at 8B. High risk of accumulation errors at 100B+ with deep pipelines.
-
-**Key risk: depth accumulation.** With $S$ pipeline stages, each activation tensor passes through $2(S-1)$ stage boundaries (forward and backward). At 4x compression with expected quality 0.995 per boundary: $\eta_{\text{act}} = 0.995^{2(S-1)}$. At $S=4$: $\eta_{\text{act}} = 0.97$ (3% penalty). At $S=8$: $\eta_{\text{act}} = 0.93$ (7% penalty). This compounds with all other efficiency factors. Deep pipelines ($S > 6$) carry significant activation compression risk.
-
-## 11. Treaty Modifications to Close the Distributed Training Loophole
+## 10. Treaty Modifications to Close the Distributed Training Loophole
 
 The preceding sections establish three facts: (1) the CCC threshold is porous — DiLoCo enables sub-CCC nodes to collectively exceed the Strict Threshold with modest investment; (2) network conditions barely matter — even 10 Mbps consumer broadband suffices; (3) the existing enforcement mechanisms (chip tracking, financial monitoring) are the primary barriers, not the compute threshold itself. This section evaluates specific treaty modifications that could narrow or close the distributed training loophole.
 
-### 11.1 Lowering the CCC Compute Threshold
+### 10.1 Lowering the CCC Compute Threshold
 
 The most direct response is to lower the CCC registration threshold from 16 H100-equivalents. The table below shows the maximum node configuration that fits under each threshold (using A100 80GB, the optimal VRAM/compute hardware):
 
@@ -634,7 +537,7 @@ However, a lower threshold does have an indirect benefit: it **increases the sur
 
 **Assessment:** Lowering the CCC compute threshold is **modestly effective through indirect mechanisms** (increased inspection surface, model quality degradation) but **does not increase evasion cost**. A moderate reduction to **4-8 H100-equivalents** may represent a reasonable compromise.
 
-### 11.2 Adding Memory to the CCC Definition
+### 10.2 Adding Memory to the CCC Definition
 
 The current CCC threshold is defined solely by compute capacity. Section 6.5 identified the resulting exploit: an evader can select hardware that maximizes VRAM while staying under the compute threshold (48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv), enabling large models (240B) that would be impossible on compute-equivalent H100 nodes (1,280 GB VRAM).
 
@@ -655,7 +558,7 @@ Same pattern as lowering the compute threshold: costs barely change, but model s
 
 **Assessment:** A memory threshold of **1-2 TB** is a reasonable, low-impact addition that closes the 48x A100 exploit without subjecting standard 8-GPU systems to registration.
 
-### 11.3 Bandwidth Restrictions
+### 10.3 Bandwidth Restrictions
 
 Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the treaty mandate bandwidth restrictions on sub-CCC nodes?
 
@@ -668,11 +571,11 @@ Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the
 
 A 10 Mbps cap reduces evasion capability by only 3-6% from baseline. The fundamental problem is DiLoCo's logarithmic bandwidth sensitivity: the evader needs 10x more inner steps but loses only one $\log_{10}$ unit of efficiency.
 
-**Implementation options:** (a) Monitoring WAN connections at registered GPU facilities — lightest touch, provides a detection signal; (b) mandating ISP throttling for GPU facilities — more intrusive, constrains legitimate inference and cloud computing; (c) requiring network registration for AI chip facilities. Option (a) has value as a supplementary detection mechanism (Section 11.4) even though bandwidth *caps* are technically ineffective.
+**Implementation options:** (a) Monitoring WAN connections at registered GPU facilities — lightest touch, provides a detection signal; (b) mandating ISP throttling for GPU facilities — more intrusive, constrains legitimate inference and cloud computing; (c) requiring network registration for AI chip facilities. Option (a) has value as a supplementary detection mechanism (Section 10.4) even though bandwidth *caps* are technically ineffective.
 
 **Assessment:** Bandwidth *caps* are **technically ineffective** — DiLoCo's logarithmic sensitivity to bandwidth means no realistic restriction produces a meaningful reduction in achievable compute. Traffic *monitoring* at GPU facilities has supplementary detection value.
 
-### 11.4 Traffic Fingerprinting and ISP Monitoring
+### 10.4 Traffic Fingerprinting and ISP Monitoring
 
 DiLoCo creates a distinctive network signature: pseudo-gradient synchronization at regular intervals, with identical payload sizes. Could treaty-mandated ISP monitoring detect this pattern?
 
@@ -682,7 +585,7 @@ DiLoCo creates a distinctive network signature: pseudo-gradient synchronization 
 
 **Assessment:** Traffic fingerprinting is a **useful supplementary detection signal** when scoped to registered GPU facilities, but not a reliable primary mechanism. It is best deployed as part of a multi-source intelligence approach, providing corroborating evidence for investigations triggered by other means.
 
-### 11.5 Hardware-Level Enforcement: TEE and Remote Attestation
+### 10.5 Hardware-Level Enforcement: TEE and Remote Attestation
 
 Modern AI accelerators include **Trusted Execution Environment (TEE)** capabilities through NVIDIA Confidential Computing. This could be repurposed for treaty enforcement: every AI chip cryptographically attests its workload to the CTB, signed by a hardware-embedded key.
 
@@ -692,23 +595,98 @@ Modern AI accelerators include **Trusted Execution Environment (TEE)** capabilit
 
 **Assessment:** TEE-based attestation is the **most technically promising** countermeasure for non-state actors. It should be considered a **medium-term** enforcement mechanism (3-5 years to deploy), requiring cooperation from all major chip manufacturers.
 
-### 11.6 Orchestration Layer Regulation
+### 10.6 Orchestration Layer Regulation
 
 Banning WAN-based distributed training software. **Assessment: Unenforceable and counterproductive.** The knowledge is published, implementation is trivial (~100 lines of PyTorch), and the techniques (federated learning, local SGD) are broadly useful in legitimate applications. Precedent: 1990s encryption export controls failed for similar reasons.
 
-### 11.7 Redefining Model Possession
+### 10.7 Redefining Model Possession
 
 In distributed DiLoCo training, each node holds a complete copy of the model weights. The treaty could redefine possession to include "distributed possession" and "control of orchestration" as violation triggers.
 
 **Assessment:** A **necessary but insufficient** legal clarification. It closes a definitional gap but does nothing to solve the detection problem.
 
-### 11.8 Enhanced Chip Tracking and Physical Inspections
+### 10.8 Enhanced Chip Tracking and Physical Inspections
 
 Strengthened enforcement through: (a) mandatory utilization reporting for all registered AI chips (DiLoCo shows distinctive 100% utilization pattern); (b) random physical inspections of AI chip facilities; (c) enhanced whistleblower programs with financial bounties; (d) power monitoring (though 15-20 kW per sub-CCC node is within normal commercial range).
 
 **Assessment:** Moderately effective and the lowest-collateral enforcement approach. Utilization reporting + whistleblower programs directly increase the cost and risk of prolonged distributed training.
 
-### 11.9 Synthesis: Recommended Treaty Modifications
+### 10.9 Chip Activation Gates
+
+Unlike TEE attestation (Section 10.5), which *reports* what a chip is doing, chip activation gates *prevent* unregistered chips from functioning. The mechanism: all AI chips require an online activation handshake with a manufacturer-controlled server before they can execute training workloads, similar to software product activation. Chips that have not been registered with the international agency cannot activate.
+
+**Strengths:** Stronger than TEE — a chip that never activates cannot train anything. Scales with manufacturing: every new chip ships locked. Combined with chip tracking (Section 10.8), creates a comprehensive lifecycle from manufacture to deployment.
+
+**Limitations:** (1) Requires cooperation from all major chip manufacturers (same barrier as TEE); (2) pre-existing and stockpiled chips lack activation firmware — a legacy fleet problem that diminishes over time but creates a multi-year window; (3) state actors with domestic fabs can produce chips without activation gates; (4) activation servers become critical infrastructure (availability, sovereignty, and censorship concerns); (5) can potentially be bypassed through firmware modification, though this requires significant expertise.
+
+**Assessment:** **High effectiveness against non-state actors** when combined with chip tracking. A natural complement to TEE attestation — activation gates prevent unauthorized use, while TEE monitors authorized use. Requires the same manufacturer cooperation as TEE and should be pursued on the same timeline.
+
+### 10.10 Foundry-Level Serialization
+
+Section 10.8's chip tracking operates at the point of sale. Foundry-level serialization operates at the point of manufacture: all advanced semiconductor fabs (TSMC, Samsung, Intel, GlobalFoundries) would be required to report every AI-capable chip produced, with unique serial numbers assigned at the wafer level, directly to the international agency.
+
+**Strengths:** Closes the gap between chips manufactured and chips sold. Point-of-sale tracking can be evaded through intermediaries, shell companies, or informal markets; point-of-manufacture tracking cannot, because there are only ~4 fabs worldwide capable of producing frontier AI chips. Creates a complete census of AI chips in existence.
+
+**Limitations:** (1) Requires international cooperation from fab host nations (Taiwan, South Korea, US, Japan) — but these are likely treaty signatories; (2) domestic fabs in non-signatory states (e.g., China's SMIC) are exempt; (3) defining "AI-capable chip" is non-trivial — the same silicon can serve AI, HPC, and graphics workloads; (4) older-generation chips (pre-serialization) remain untracked.
+
+**Assessment:** **Medium-high effectiveness.** The small number of advanced fabs makes this unusually tractable for an international verification regime. Should be a **high priority** for treaty implementation, as it provides the foundation for all downstream chip tracking.
+
+### 10.11 Cloud Provider Obligations
+
+The analysis in Sections 5-8 assumes the evader owns hardware. An alternative evasion path — not previously analyzed — is renting GPUs from cloud providers in small increments across multiple providers and accounts.
+
+**Two complementary measures:**
+
+1. **Cross-provider GPU-hour reporting with KYC:** Require all cloud GPU providers (AWS, GCP, Azure, Lambda, CoreWeave, Oracle, etc.) to report cumulative GPU-hours per customer entity to the international agency. Know-your-customer (KYC) requirements prevent the same entity from splitting across accounts. Cross-referencing reports across providers catches an evader distributing rentals.
+
+2. **Sustained utilization flagging:** Require hosting providers and colocation facilities to flag any customer sustaining >90% GPU utilization for more than 48 hours. DiLoCo training is inherently compute-bound and runs for months — this is a distinctive operational signature that differentiates training from inference or intermittent research workloads.
+
+**Limitations:** (1) Only effective if all major cloud providers participate — a single non-compliant provider in a non-signatory jurisdiction creates a gap; (2) KYC can be evaded through shell companies, though this adds cost and detection risk; (3) legitimate long-running workloads (climate simulation, molecular dynamics, rendering farms) would trigger utilization flags, requiring follow-up investigation.
+
+**Assessment:** **Medium-high effectiveness against non-state actors** who rent rather than own hardware. **Strongly recommended** — closes a significant evasion path not addressed by hardware-focused measures. Ineffective against state actors who use owned hardware.
+
+### 10.12 Energy-Side Detection
+
+GPU clusters have distinctive power consumption profiles: sustained near-constant high draw, 24/7, for months. Utility companies could be required to flag step-function increases in power consumption at facilities known or suspected to house computing equipment.
+
+**Scale analysis:**
+
+| Configuration | Power Draw | Detectability |
+|:--|:--|:--|
+| 4 nodes (48x A100 each) | ~60-80 kW | **Low** — within normal commercial range |
+| 72 nodes | ~1-1.5 MW | **Marginal** — comparable to a medium office building; detectable if correlated with GPU procurement intelligence |
+| 500 nodes (distributed) | ~7-10 MW total, ~15-20 kW per site | **Low per site** — individual sites are unremarkable |
+| 500 nodes (PP co-located) | ~7-10 MW concentrated | **Medium** — comparable to a small data center; requires industrial power infrastructure |
+
+**Assessment:** **Low-medium effectiveness** as a standalone measure. Power monitoring is most useful as a **corroborating signal** when combined with other intelligence (chip procurement records, financial monitoring, tip-offs). The key scenario where power detection adds value is PP-Group DiLoCo co-location, where multiple nodes must be in the same facility, concentrating power draw. For fully distributed flat DiLoCo, individual node power draw is unremarkable.
+
+### 10.13 Model Provenance and Capability-Based Detection
+
+Rather than detecting the training process, detect the *result*. Two complementary approaches:
+
+1. **Mandatory model provenance certificates:** Require all publicly deployed AI models to carry a cryptographic certificate linking them to a registered training run, including the training compute used, hardware, and duration. Models without valid certificates are presumptive evidence of illegal training. Similar to chain-of-custody requirements for controlled substances or certificates of origin in trade.
+
+2. **Capability-based suspicion triggers:** Maintain a registry of authorized training runs and their expected capability levels. If a model appears with capabilities that exceed what any registered training run could produce — for example, a model demonstrating GPT-4-level performance that no registered run had sufficient compute to produce — this triggers an investigation.
+
+**Strengths:** Operates on the output side, bypassing all hardware-level and network-level evasion. Doesn't prevent training but makes *deploying* the result risky, which reduces the incentive to evade in the first place. Capability-based detection works even if the training process was completely undetectable.
+
+**Limitations:** (1) Doesn't prevent training, only deployment — an evader who wants a model for private use (e.g., state intelligence agency) is unaffected; (2) capability evaluation is imprecise — it's difficult to establish exact capability thresholds; (3) open-source and private deployment channels are hard to monitor; (4) models can be fine-tuned or distilled to obscure their origin; (5) provenance certificates can be forged if the signing infrastructure is compromised.
+
+**Assessment:** **Medium effectiveness.** Most valuable as a deterrent against commercial deployment of illegally trained models. Should be **recommended** as part of a comprehensive package — it addresses a gap that no hardware-focused measure can fill.
+
+### 10.14 Active Intelligence Operations
+
+Standard intelligence tradecraft applied to the distributed training detection problem:
+
+1. **Honeypot nodes:** Operate decoy DiLoCo nodes that advertise availability to join distributed training runs — for example, on forums, dark-web markets, or through intermediaries where an evader might recruit third-party compute. Analogous to law enforcement honeypots on illicit marketplaces. When an evader's orchestrator contacts the honeypot, the agency learns the training configuration, model architecture, and network topology.
+
+2. **Checkpoint forensics:** If an evader's model weights are obtained through any channel (whistleblower, infiltration, interception, or public release), the optimizer state and weight distribution can be forensically analyzed to reconstruct the training configuration — approximate number of replicas, H value, compression artifacts, total FLOP, and training duration. This enables post-hoc attribution even if the training process was undetected.
+
+3. **Infiltration of recruitment networks:** A non-state evader operating 72+ nodes likely needs to recruit personnel and procure hardware through networks that can be infiltrated. The larger the operation, the more human touchpoints exist.
+
+**Assessment:** **Low-medium effectiveness against non-state actors** (useful as a supplementary intelligence tool), **medium effectiveness against state actors** (where infiltration and signals intelligence are standard tools and often the only effective lever). These are operational capabilities, not treaty provisions — they would be funded and directed by national intelligence agencies rather than specified in treaty text.
+
+### 10.15 Synthesis: Recommended Treaty Modifications
 
 No single countermeasure closes the distributed training loophole. Effectiveness depends critically on the **actor type**:
 
@@ -725,6 +703,12 @@ No single countermeasure closes the distributed training loophole. Effectiveness
 | Model possession redefinition | Medium | None | **Recommended** — legal clarification |
 | Enhanced chip tracking | **Medium-High** | Low | **Strongly recommended** |
 | Whistleblower programs | **Medium-High** | None | **Strongly recommended** |
+| Chip activation gates | **High** | Medium | **Strongly recommended** (medium-term, with TEE) |
+| Foundry-level serialization | **Medium-High** | Low | **Recommended** — point-of-manufacture tracking |
+| Cloud provider KYC/reporting | **Medium-High** | Medium | **Strongly recommended** — closes cloud rental path |
+| Energy monitoring | Low-Medium | Low | **Consider** — supplementary signal at scale |
+| Model provenance certificates | **Medium** | Low | **Recommended** — output-side deterrent |
+| Honeypot operations | Low-Medium | None | **Consider** — intelligence tool |
 
 Note: "Registration Burden" refers to the registration, reporting, and inspection obligations imposed on legitimate computing systems — not bans or confiscation. Systems caught by lower thresholds must be registered and may be subject to inspections, but continue to operate normally.
 
@@ -736,8 +720,13 @@ Note: "Registration Burden" refers to the registration, reporting, and inspectio
 | TEE/Remote attestation | Low | State actors can manufacture unattested chips |
 | Enhanced chip tracking | Low | Classified procurement, domestic fabs |
 | Financial monitoring | **Medium** | Detectable above ~$1B for most states |
+| Chip activation gates | Low | State actors can manufacture unactivated chips |
+| Foundry serialization | Low-Medium | Requires international fab cooperation; domestic fabs exempt |
+| Cloud provider reporting | None | State actors use owned hardware |
+| Model provenance | Low | State actors deploy internally |
+| Active intelligence | **Medium** | Infiltration and SIGINT are standard tools |
 | Diplomatic/intelligence | **Medium-High** | The only effective lever at state scale |
 
-**Recommended package:** (1) 1 TB VRAM threshold; (2) TEE attestation mandate; (3) model possession redefinition; (4) enhanced whistleblower bounties; (5) utilization reporting; (6) consider lowering CCC threshold to 4-8 H100-eq; (7) traffic monitoring (not caps) at GPU facilities.
+**Recommended package:** (1) 1 TB VRAM threshold; (2) TEE attestation mandate with chip activation gates; (3) foundry-level serialization; (4) model possession redefinition; (5) enhanced whistleblower bounties; (6) utilization reporting; (7) cloud provider KYC and GPU-hour reporting; (8) model provenance certificates for public deployment; (9) consider lowering CCC threshold to 4-8 H100-eq; (10) traffic monitoring (not caps) at GPU facilities.
 
 **The hard truth:** Even with all recommended modifications, the distributed training loophole cannot be fully closed against a determined state actor with domestic chip manufacturing, classified procurement, and sovereign territory. Against such actors, the treaty's enforcement ultimately depends on diplomatic, intelligence, and economic instruments — the same tools used in nuclear nonproliferation, with the same fundamental limitations.
