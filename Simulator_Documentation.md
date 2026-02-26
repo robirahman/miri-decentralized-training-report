@@ -516,3 +516,133 @@ Consider a 300B model on 72 nodes with 2304 GB VRAM each (FP16): $300\text{B} \t
 1.  **Explore EP for MoE models.** If your model is MoE, enabling Expert Parallelism may reduce per-node memory enough to avoid PP entirely — the biggest performance win.
 2.  **Use hierarchical mode with PP-Group DiLoCo.** When the model must be sharded, enabling hierarchical mode lets PP groups use fast regional interconnect, dramatically reducing per-micro-batch latency.
 3.  **Explore the boundary.** Toggle precision or model size to find the largest model that fits on one node. The performance cliff at the sharding boundary is significant, so staying in DiLoCo mode (even with a smaller model) is often better than PP-Group DiLoCo with a larger model.
+
+---
+
+## Appendix B: Potential Future Improvements to Decentralized Training
+
+The techniques documented below are architectural and algorithmic improvements that have been demonstrated in recent research but have **not been tested at large scale in distributed WAN settings**. They are not incorporated into the simulator because their effectiveness at the $10^{26}$–$10^{27}$ FLOP regimes targeted by this analysis remains unvalidated.
+
+They are documented here so that policymakers are aware that decentralized training capabilities could improve in the future as these techniques mature and are validated at scale. Each entry notes the scale at which the technique has been tested, which is typically 2–3 orders of magnitude smaller than the simulator's target regime.
+
+All findings are from the February 2026 literature review (see `Bibliography/Papers_to_Study.md`, Section 5).
+
+### B.1 Zero Bubble Pipeline Scheduling
+
+**Applies to:** PP-Group DiLoCo (Mode C) and PP-over-WAN (Mode B).
+
+**Simulator assumption:** GPipe bubble formula — $(S - 1)$ of $(M + S - 1)$ micro-batch slots are idle. For $M=8, S=3$: 22.2% bubble overhead.
+
+**What the literature shows:** [Qi et al. (2024), "Zero Bubble Pipeline Parallelism"](https://arxiv.org/abs/2401.10241) splits the backward pass into input-gradient (B) and weight-gradient (W) phases, rescheduling W to fill bubble slots. ZB-2p achieves <1% bubble across all tested configurations. Measured 23–30% throughput improvement over 1F1B on models from 1.5B to 28.3B with 8 pipeline stages. Now standard practice at frontier labs (foundation for DeepSeek-V3's DualPipe).
+
+**Quantified gap:**
+
+| PP Stages ($S$) | Simulator Bubble | ZB-2p Bubble | Compute Speedup |
+|:--|:--|:--|:--|
+| 2, $M=8$ | 11.1% | ~2% | 1.10× |
+| 3, $M=8$ | 22.2% | ~3% | 1.25× |
+| 4, $M=8$ | 27.3% | ~4% | 1.32× |
+
+**WAN-applicable:** Yes. Zero-bubble scheduling is a local computation reordering that does not change the communication pattern.
+
+**Caveat:** Over WAN, communication latency (not bubble) typically dominates. The speedup applies only to the compute portion of the PP step time. End-to-end improvement depends on the compute/communication ratio.
+
+**Evidence scale:** 28.3B parameters, 8 pipeline stages.
+
+### B.2 Delayed Nesterov + Dynamic Local Updates
+
+**Applies to:** Algorithmic efficiency penalty (Section 4).
+
+**Simulator assumption:** $\alpha \approx 0.08$ (scaled by model size), giving ~88% efficiency at $H=128$ for 144B parameters.
+
+**What the literature shows:** [Liu, Douillard et al. (2024), "Asynchronous Local-SGD Training for Language Modeling"](https://arxiv.org/abs/2401.09135) demonstrates two techniques that nearly eliminate the DiLoCo algorithmic penalty:
+
+*   **Delayed Nesterov (DN):** Standard Nesterov momentum compounds incorrectly in async mode when workers arrive sequentially. DN fixes this by applying momentum only every $N$ server iterations ($N$ = worker count), using pure gradient descent between. This alone closes most of the async gap.
+*   **Dynamic Local Updates (DyLU):** Each worker adjusts its $H$ proportionally to its speed: $w.\text{steps} = \lfloor v(w) / \max(v(w')) \cdot H \rfloor$. Slow workers do fewer local steps, preventing stale gradients.
+
+At $H=50$, naive async DiLoCo has ~7% perplexity degradation vs. sync (44.27 vs 41.35 for 20M params). With DN + DyLU, the gap is fully closed (41.13 vs 41.35), slightly *beating* synchronous training.
+
+**Quantified gap:** The simulator's effective $\alpha$ could drop to near zero with these techniques, overestimating the penalty by 5–12%.
+
+**On the straggler model:** DyLU also makes the straggler factor $f(n) = 1 + 0.05 \cdot \log_2(n)$ overly pessimistic for heterogeneous hardware, since DyLU prevents slow workers from blocking fast ones. Potential 10–30% improvement in mixed-hardware settings.
+
+**WAN-applicable:** Yes.
+
+**Evidence scale:** 150M parameters, ≤16 workers. The simulator targets 144B+; whether the alpha reduction persists at 1000× larger scale is unknown.
+
+### B.3 Hierarchical Momentum (HALoS)
+
+**Applies to:** Hierarchical effective $H$ (Section 4.4).
+
+**Simulator assumption:** $H_{\text{eff}} = H_{\text{inner}} \cdot H_{\text{regional}}^{0.5}$, predicting 85–88% efficiency.
+
+**What the literature shows:** [Kim et al. (2025), "HALoS: Hierarchical Asynchronous Local SGD"](https://arxiv.org/abs/2506.04531) uses local parameter servers within regions and a global parameter server across regions, with separate hierarchical momentum terms ($\beta_{\text{local}}$ and $\beta_{\text{global}}$). HALoS **matches synchronous SGD quality** — meaning near-zero algorithmic penalty. Achieves 7.5× wall-clock speedup over synchronous baselines by eliminating synchronization barriers.
+
+**Quantified gap:** The $\sqrt{H_{\text{regional}}}$ heuristic is conservative. HALoS suggests hierarchy can achieve near-zero penalty with the right optimizer, vs. the simulator's prediction of 85–88% efficiency. Gap: ~3–5%.
+
+**WAN-applicable:** Yes.
+
+**Evidence scale:** 70M parameters only (Pythia/LLaMA/Qwen-70M). Whether hierarchical momentum maintains zero penalty at 144B is unknown.
+
+### B.4 Sparse Parameter Averaging (SPARTA)
+
+**Applies to:** Algorithmic efficiency at high $H$ (Section 4) and communication volume (Section 3.1).
+
+**Simulator assumption:** Higher $H$ = worse efficiency per $\eta = 1 - \alpha \cdot \log_{10}(H)$. Communication payload = $P \times 16 / C_r$.
+
+**What the literature shows:** [SPARTA (2025)](https://openreview.net/pdf?id=stFPf3gzq1) exchanges only 0.1–0.5% of parameters continuously (not at DiLoCo sync boundaries). At $H=10{,}000$ with 0.1% exchange: **1000× communication reduction** AND **14.3% perplexity improvement** over DiLoCo-alone at $H=10{,}000$.
+
+The improvement is possible because sparse weight averaging acts as a regularizer preventing local model drift, enabling higher learning rates (2×) and larger $H$ values without the expected degradation. This **decouples** $H$ from convergence quality — a relationship the simulator treats as fundamental.
+
+**Quantified gap:** At $H=10{,}000$ for 124M parameters, the simulator predicts ~61% efficiency. SPARTA achieves quality better than DiLoCo-alone, suggesting ~85–95% effective efficiency. That is a 25–35 percentage point gap.
+
+**WAN-applicable:** Yes.
+
+**Critical caveats:**
+*   Only tested at 124M parameters, 2–8 nodes.
+*   Paper explicitly states "doesn't scale well beyond 16 nodes."
+*   Extrapolation to 144B / 72 nodes is highly speculative.
+*   The regularization mechanism may behave differently at scale.
+
+### B.5 DualPipe Compute-Communication Overlap
+
+**Applies to:** EP All-to-All latency (Section 1.5).
+
+**Simulator assumption:** EP latency is additive: $T_{\text{EP}} = 2 \cdot \text{Latency} \cdot L_{\text{MoE}}$.
+
+**What the literature shows:** [DeepSeek-V3 (2024)](https://arxiv.org/abs/2412.19437) feeds micro-batches from both pipeline ends simultaneously and dedicates 20 of 132 SMs to communication kernels. Result: "both all-to-all and PP communication can be fully hidden during execution."
+
+**WAN-applicable:** No. DualPipe's overlap requires NVLink (160 GB/s, ~1μs latency) and InfiniBand (50 GB/s, ~5μs). At WAN latency (100ms), communication cannot be hidden behind ~30ms of MLP compute. **The simulator's additive EP latency model is correct for WAN settings.**
+
+**Evidence scale:** 671B MoE (DeepSeek-V3) on H800 GPUs.
+
+### B.6 Loss-Tolerant Training
+
+**Applies to:** Straggler model (Section 5.1).
+
+**Simulator assumption:** Reliable TCP connections; straggler factor based on compute heterogeneity.
+
+**What the literature shows:** [Weintraub et al. (2025), "Distributed Training under Packet Loss"](https://arxiv.org/abs/2507.07114) demonstrates that 10% packet loss causes only 0.8% perplexity degradation on LLaMA-2 7B. At 20%: 2.6%. At 30%: 3.8%. Uses unbiased gradient aggregation over whatever packets arrive, plus bounded-drift parameter broadcasts.
+
+The paper argues that TCP retransmissions are the primary problem for WAN training — they inflate tail latencies. A loss-tolerant UDP approach could reduce effective straggler penalties at the cost of a small (~1%) convergence penalty.
+
+**Quantified gap:** A developer using loss-tolerant protocols could see 10–15% reduction in straggler overhead.
+
+**WAN-applicable:** Yes.
+
+**Verdict:** This largely validates the simulator's approach. The simulator's straggler factor partially captures TCP retransmission effects. WAN training is more robust to network issues than one might fear.
+
+**Evidence scale:** 7B parameters, 64 GPUs.
+
+### B.7 Summary
+
+| Technique | Simulator Gap | Speedup vs. Simulator | WAN? | Evidence Scale |
+|:--|:--|:--|:--|:--|
+| Zero Bubble PP (B.1) | GPipe bubble 11–27%; ZB-2p <1% | 10–30% on PP compute | Yes | 28B, 8 stages |
+| Delayed Nesterov + DyLU (B.2) | $\alpha=0.08$ too pessimistic with proper async optimizer | 5–15% | Yes | 150M, ≤16 workers |
+| HALoS hierarchy (B.3) | $\sqrt{H_R}$ heuristic conservative | 3–5% | Yes | 70M only |
+| SPARTA sparse averaging (B.4) | Efficiency formula too pessimistic at high $H$ | 30–50% (speculative) | Yes | 124M, ≤8 nodes |
+| DualPipe EP overlap (B.5) | EP latency additive vs. fully hidden | Large (datacenter only) | **No** | 671B |
+| Loss-tolerant training (B.6) | Straggler model doesn't capture UDP benefits | 10–15% on straggler | Yes | 7B, 64 GPUs |
+
+**Implications for policy analysis:** None of these techniques have been validated at the scale the simulator targets ($10^{26}$–$10^{27}$ FLOPs, 100B+ parameters, 50+ WAN-connected nodes). The simulator's estimates reflect techniques that are proven at scale today. However, policymakers should be aware that decentralized training capabilities are an active area of research. If techniques like zero-bubble PP scheduling, optimized async DiLoCo, sparse parameter averaging, or loss-tolerant protocols are successfully scaled, future developers could plausibly train 15–30% faster than the simulator currently predicts for pipeline-parallel workloads, or 5–15% faster for pure DiLoCo workloads. The SPARTA results hint at even larger gains at very high synchronization intervals, but the evidence is preliminary (124M parameters, ≤8 nodes). These improvements would narrow the gap between decentralized and datacenter training, not eliminate it.

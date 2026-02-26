@@ -37,30 +37,30 @@ The following papers have been identified as high-priority sources to improve th
 
 ---
 
-## 5. Recently Identified Research (February 2026 Literature Review)
+## 5. Recently Identified Research (February 2026 Literature Review) — REVIEWED
 
-These papers were identified during a systematic literature review and are directly relevant to the simulator's current modeling gaps.
+These papers were identified during a systematic literature review and compared against the simulator's modeling assumptions. None of these techniques have been validated at the scale the simulator targets ($10^{26}$–$10^{27}$ FLOPs, 100B+ parameters, 50+ WAN nodes), so they are not incorporated into the simulator. They are documented in `Simulator_Documentation.md`, Appendix B as potential future improvements that policymakers should be aware of.
 
 ### Pipeline Parallelism Modeling
-*   **[Zero Bubble Pipeline Parallelism (Qi et al., 2024)](https://arxiv.org/abs/2401.10241)**
-    *   **Why:** Achieves zero pipeline bubbles by splitting backward into input-gradient and weight-gradient phases. Foundation for DeepSeek-V3's DualPipe. Now standard practice at frontier labs.
-    *   **Impact on Simulator:** Our GPipe bubble formula $(M + S - 1)$ is pessimistic. Could add a "bubble efficiency" parameter (1.0 for GPipe, ~0.0 for zero-bubble schedules) to the PP-Group DiLoCo mode.
-*   **[DeepSeek-V3 Technical Report (2024)](https://arxiv.org/abs/2412.19437)**
-    *   **Why:** DualPipe eliminates pipeline bubbles and fully overlaps EP communication with compute. FP8 training at 671B MoE scale. Real training cost: 2.788M H800 GPU-hours.
-    *   **Impact on Simulator:** Provides real-world data to validate the simulator's PP + MoE modeling. The compute-communication overlap for EP is not modeled in our simulator.
+*   **[Zero Bubble Pipeline Parallelism (Qi et al., 2024)](https://arxiv.org/abs/2401.10241)** ✅ Reviewed
+    *   **Finding:** ZB-2p achieves <1% bubble vs. our GPipe formula's 11–27%. 10–30% speedup on PP compute. WAN-applicable (local computation reordering only). Tested at 28B, 8 stages.
+    *   **Verdict:** Simulator is conservative. Documented as known conservative assumption (Appendix B.1).
+*   **[DeepSeek-V3 Technical Report (2024)](https://arxiv.org/abs/2412.19437)** ✅ Reviewed
+    *   **Finding:** DualPipe fully hides EP All-to-All communication, but requires NVLink/InfiniBand. At WAN latency (100ms), overlap is impossible — our additive EP latency model is correct for WAN.
+    *   **Verdict:** Simulator is accurate for its WAN use case. Documented as datacenter-only technique (Appendix B.5).
 
 ### Hierarchical & Async DiLoCo
-*   **[HALoS: Hierarchical Asynchronous Local SGD (Kim et al., 2025)](https://arxiv.org/abs/2506.04531)**
-    *   **Why:** Directly models hierarchical async Local SGD for geo-distributed LLM training. 7.5x faster convergence than synchronous baselines. Includes their own simulator.
-    *   **Impact on Simulator:** Validates or challenges our hierarchical DiLoCo model and the $\sqrt{H_{\text{regional}}}$ effective-H heuristic. Their simulator could be used for cross-validation.
-*   **[Asynchronous Local-SGD Training for Language Modeling (Liu, Douillard et al., 2024)](https://arxiv.org/abs/2401.09135)**
-    *   **Why:** Comprehensive DeepMind study of async vs. sync Local SGD efficiency for LLM pretraining. Introduces Delayed Nesterov outer optimizer and Dynamic Local Updates.
-    *   **Impact on Simulator:** Provides empirical data to calibrate the algorithmic efficiency penalty $\alpha$. Could replace our engineering estimate with published measurements.
+*   **[HALoS: Hierarchical Asynchronous Local SGD (Kim et al., 2025)](https://arxiv.org/abs/2506.04531)** ✅ Reviewed
+    *   **Finding:** Achieves near-zero algorithmic penalty with hierarchical momentum ($\beta_{\text{local}}, \beta_{\text{global}}$), vs. our $\sqrt{H_R}$ heuristic predicting 85–88% efficiency. Only tested at 70M scale.
+    *   **Verdict:** Simulator's hierarchy heuristic is conservative by ~3–5%. Documented in Appendix B.3.
+*   **[Asynchronous Local-SGD Training for Language Modeling (Liu, Douillard et al., 2024)](https://arxiv.org/abs/2401.09135)** ✅ Reviewed
+    *   **Finding:** Delayed Nesterov + Dynamic Local Updates fully close the async gap (effective $\alpha \to 0$). DyLU also mitigates straggler effects for heterogeneous hardware. Tested at ≤150M, ≤16 workers.
+    *   **Verdict:** Simulator's $\alpha=0.08$ is reasonable for standard sync DiLoCo but 5–12% too pessimistic for DN+DyLU-enhanced versions. Documented in Appendix B.2.
 
 ### Communication & Reliability
-*   **[SPARTA: Sparse Parameter Averaging for DiLoCo (2025)](https://openreview.net/pdf?id=stFPf3gzq1)**
-    *   **Why:** 1000x+ communication reduction by exchanging only sparse parameter subsets. Allows H=10,000 while improving perplexity by 14.3%.
-    *   **Impact on Simulator:** Would dramatically change bandwidth requirements if validated at scale. Could be modeled as an extreme compression preset.
-*   **[Distributed Training under Packet Loss (Weintraub et al., 2025)](https://arxiv.org/abs/2507.07114)**
-    *   **Why:** First framework for training over unreliable connections. 10% random packet loss causes only 0.8% perplexity change on LLaMA-2 7B.
-    *   **Impact on Simulator:** Our simulator assumes reliable TCP. This paper shows WAN packet loss has minimal impact, which is reassuring for our modeling assumptions.
+*   **[SPARTA: Sparse Parameter Averaging for DiLoCo (2025)](https://openreview.net/pdf?id=stFPf3gzq1)** ✅ Reviewed
+    *   **Finding:** 1000× compression via continuous sparse exchange. At $H=10{,}000$: 14.3% perplexity *improvement* (regularization effect). Decouples $H$ from convergence — a relationship the simulator treats as fundamental. Only tested at 124M, ≤8 nodes; paper states "doesn't scale well beyond 16 nodes."
+    *   **Verdict:** Potentially large gap (25–35 pp) but highly speculative at scale. Documented with caveats in Appendix B.4.
+*   **[Distributed Training under Packet Loss (Weintraub et al., 2025)](https://arxiv.org/abs/2507.07114)** ✅ Reviewed
+    *   **Finding:** 10% packet loss → 0.8% perplexity degradation on LLaMA-2 7B. Loss-tolerant UDP could reduce straggler overhead by 10–15%. Tested at 7B, 64 GPUs.
+    *   **Verdict:** Validates simulator's reliability assumptions. TCP retransmission effects partially captured by straggler factor. Documented in Appendix B.6.
