@@ -135,6 +135,25 @@ LOWERED_CCC_H100_FP8 = {
 MEMORY_THRESHOLDS_GB = [256, 512, 1024, 2048]
 
 # Collateral damage: representative legitimate computing systems
+# ── Compression quality model ────────────────────────────────────────────────
+# Multiplicative penalty on eta from gradient compression quality loss.
+# Based on literature review:
+#   - FP4 (4x): lossless at 4B (Streaming DiLoCo 2501.18512), 15B (MuLoCo 2505.23725)
+#   - 16x: FP4 + 4x sparsification; FP4 validated, sparsification limited evidence
+#   - 100x: 2-bit + TopK 3% or FP4 + 25x sparse; validated only at 512M (SparseLoCo 2508.15706)
+# "optimistic" = best-case (literature supports lossless at small scale)
+# "expected"   = accounts for extrapolation uncertainty to 100B+ scale
+# "conservative" = pessimistic bound covering compounding unknowns
+
+COMPRESSION_QUALITY = {
+    1:   {"optimistic": 1.00, "expected": 1.00, "conservative": 1.00},
+    4:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.99},
+    16:  {"optimistic": 1.00, "expected": 0.98, "conservative": 0.95},
+    100: {"optimistic": 0.99, "expected": 0.95, "conservative": 0.90},
+}
+
+DEFAULT_SCENARIO = "expected"
+
 LEGITIMATE_SYSTEMS = [
     {"name": "Consumer gaming PC (1x RTX 5090)",    "gpus": 1,   "vram_gb": 32,    "tflops_fp16": 104,  "h100_equiv": 0.11, "category": "Consumer"},
     {"name": "Enthusiast workstation (2x RTX 4090)", "gpus": 2,   "vram_gb": 48,    "tflops_fp16": 330,  "h100_equiv": 0.33, "category": "Consumer"},
@@ -168,17 +187,67 @@ def alpha(params_billion):
     return 0.08 / (1.0 + log_p / 5.0)
 
 
-def efficiency(h, params_billion):
-    """eta = max(0.4, 1 - alpha * log10(H))"""
+def compression_quality(compression_ratio, scenario=None):
+    """Multiplicative quality factor for gradient compression.
+    Interpolates log-linearly between known compression thresholds."""
+    if scenario is None:
+        scenario = DEFAULT_SCENARIO
+    if compression_ratio <= 1:
+        return 1.0
+    # Known thresholds
+    thresholds = sorted(COMPRESSION_QUALITY.keys())
+    # Exact match
+    if compression_ratio in COMPRESSION_QUALITY:
+        return COMPRESSION_QUALITY[compression_ratio][scenario]
+    # Log-linear interpolation
+    log_cr = math.log10(compression_ratio)
+    for i in range(len(thresholds) - 1):
+        lo, hi = thresholds[i], thresholds[i + 1]
+        if lo <= compression_ratio <= hi:
+            if lo <= 1:
+                lo_log = 0
+            else:
+                lo_log = math.log10(lo)
+            hi_log = math.log10(hi)
+            t = (log_cr - lo_log) / (hi_log - lo_log) if hi_log > lo_log else 0
+            q_lo = COMPRESSION_QUALITY[lo][scenario]
+            q_hi = COMPRESSION_QUALITY[hi][scenario]
+            return q_lo + t * (q_hi - q_lo)
+    # Above max threshold: extrapolate from last two
+    lo, hi = thresholds[-2], thresholds[-1]
+    return COMPRESSION_QUALITY[hi][scenario]
+
+
+def replica_penalty(n_replicas, params_billion):
+    """Multiplicative penalty from averaging n_replicas' pseudo-gradients.
+    Based on DiLoCo Scaling Laws (2503.09799) Table 5:
+    M=8 at 2.4B: ~1.2% penalty. Penalty decreases with model size."""
+    if n_replicas <= 1:
+        return 1.0
+    # ~0.5% per doubling at 2.4B, scales inversely with model size
+    base_per_doubling = 0.005
+    scale_adj = min(2.4, params_billion) / max(params_billion, 0.1)
+    penalty = base_per_doubling * scale_adj * math.log2(n_replicas)
+    return max(0.85, 1.0 - penalty)
+
+
+def efficiency(h, params_billion, compression_ratio=1, scenario=None, n_replicas=1):
+    """Combined efficiency: eta_H * eta_compression * eta_replicas.
+    eta_H = max(0.4, 1 - alpha * log10(H))  [sync interval penalty]
+    eta_compression = compression_quality()   [gradient compression quality]
+    eta_replicas = replica_penalty()           [multi-replica averaging]"""
     a = alpha(params_billion)
-    eta = 1.0 - a * math.log10(h)
-    return max(0.4, eta)
+    eta_h = 1.0 - a * math.log10(h)
+    eta_h = max(0.4, eta_h)
+    eta_c = compression_quality(compression_ratio, scenario)
+    eta_r = replica_penalty(n_replicas, params_billion)
+    return eta_h * eta_c * eta_r
 
 
 def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                      time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                      bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                     bw_bps=None, latency_s=None):
+                     bw_bps=None, latency_s=None, scenario=None):
     """Compute all metrics for a given node configuration and node count."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -226,7 +295,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         eta = 1.0
     else:
         h_min = math.ceil(t_sync / t_comp)
-        eta = efficiency(h_min, params_b)
+        eta = efficiency(h_min, params_b, compression_ratio=compression,
+                         scenario=scenario, n_replicas=n_nodes)
 
     # Total local-equivalent FLOPs (compute-bound regime)
     c_actual = n_nodes * effective_flops * time_seconds
@@ -278,7 +348,8 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
                                   bytes_per_param=BYTES_PER_PARAM,
                                   bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
                                   bw_bps=None, latency_s=None,
-                                  regional_bw_bps=None, regional_latency_s=None):
+                                  regional_bw_bps=None, regional_latency_s=None,
+                                  scenario=None):
     """Compute metrics for hierarchical DiLoCo (two-tier topology)."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -319,7 +390,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
         # Fall back to flat DiLoCo
         return compute_scenario(config_name, n_nodes, compression, time_seconds,
                                 bytes_per_param, bits_per_pseudo_grad,
-                                bw_bps, latency_s)
+                                bw_bps, latency_s, scenario=scenario)
 
     # Regional sync (fast LAN)
     f_regional = straggler_factor(nodes_per_group)
@@ -339,7 +410,8 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     # Effective H (hierarchical formula)
     h_eff = h_inner_min * math.sqrt(h_regional_min)
 
-    eta = efficiency(h_eff, params_b)
+    eta = efficiency(h_eff, params_b, compression_ratio=compression,
+                     scenario=scenario, n_replicas=n_nodes)
 
     # Total local-equivalent FLOPs
     c_actual = n_nodes * effective_flops * time_seconds
@@ -386,7 +458,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
 def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_b,
                             n_moe_layers=32, compression=COMPRESSION,
-                            time_seconds=None):
+                            time_seconds=None, scenario=None):
     """Compute metrics for MoE + Expert Parallelism scenario."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -434,7 +506,8 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
         eta = 1.0
     else:
         h_min = math.ceil(t_sync / t_step)
-        eta = efficiency(h_min, total_params_b)
+        eta = efficiency(h_min, total_params_b, compression_ratio=compression,
+                         scenario=scenario, n_replicas=n_nodes)
 
     # Total local-equivalent FLOPs (based on active params compute rate)
     # Adjust for EP latency overhead
@@ -658,7 +731,7 @@ DEPLOYMENT_PROFILES = {
 
 
 def bandwidth_sensitivity(config_name, n_nodes, compression=COMPRESSION,
-                          latency_s=None, use_hierarchical=False):
+                          latency_s=None, use_hierarchical=False, scenario=None):
     """Sweep bandwidth values and return results for each."""
     if latency_s is None:
         latency_s = LATENCY_S
@@ -668,17 +741,19 @@ def bandwidth_sensitivity(config_name, n_nodes, compression=COMPRESSION,
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=latency_s)
+                                              bw_bps=bw_bps, latency_s=latency_s,
+                                              scenario=scenario)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=latency_s)
+                                 bw_bps=bw_bps, latency_s=latency_s,
+                                 scenario=scenario)
         r["bw_mbps"] = bw_mbps
         results.append(r)
     return results
 
 
 def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
-                        bw_bps=None, use_hierarchical=False):
+                        bw_bps=None, use_hierarchical=False, scenario=None):
     """Sweep latency values and return results for each."""
     if bw_bps is None:
         bw_bps = BW_BPS
@@ -687,10 +762,12 @@ def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=lat_s)
+                                              bw_bps=bw_bps, latency_s=lat_s,
+                                              scenario=scenario)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=lat_s)
+                                 bw_bps=bw_bps, latency_s=lat_s,
+                                 scenario=scenario)
         r["latency_scenario"] = name
         r["latency_ms"] = lat_s * 1000
         results.append(r)
@@ -698,7 +775,7 @@ def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
 
 
 def deployment_profile_sweep(config_name, n_nodes, compression=COMPRESSION,
-                             use_hierarchical=False):
+                             use_hierarchical=False, scenario=None):
     """Test all deployment profiles and return results."""
     results = []
     for name, profile in DEPLOYMENT_PROFILES.items():
@@ -707,10 +784,12 @@ def deployment_profile_sweep(config_name, n_nodes, compression=COMPRESSION,
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=lat_s)
+                                              bw_bps=bw_bps, latency_s=lat_s,
+                                              scenario=scenario)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=lat_s)
+                                 bw_bps=bw_bps, latency_s=lat_s,
+                                 scenario=scenario)
         r["profile"] = name
         r["profile_description"] = profile["description"]
         r["bw_mbps"] = profile["bw_mbps"]
@@ -780,7 +859,7 @@ def print_deployment_profiles(config_name, n_nodes, compression=COMPRESSION,
 def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
                              time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                              bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                             bw_bps=None, latency_s=None):
+                             bw_bps=None, latency_s=None, scenario=None):
     """Compute scenario for an arbitrary config dict (not from named configs)."""
     if "bytes_per_param" in cfg:
         bytes_per_param = cfg["bytes_per_param"]
@@ -813,7 +892,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         eta = 1.0
     else:
         h_min = math.ceil(t_sync / t_comp)
-        eta = efficiency(h_min, params_b)
+        eta = efficiency(h_min, params_b, compression_ratio=compression,
+                         scenario=scenario, n_replicas=n_nodes)
 
     c_actual = n_nodes * effective_flops * time_seconds
     c_local = c_actual * eta
@@ -1059,6 +1139,7 @@ if __name__ == "__main__":
     print(f"Time limit: {TIME_YEARS} years ({TIME_SECONDS/86400:.0f} days)")
     print(f"WAN: {BW_MBPS} Mbps, {LATENCY_S*1000:.0f} ms latency")
     print(f"MFU: {MFU*100:.0f}%  |  Compression: {COMPRESSION}x  |  Streaming: Yes")
+    print(f"Compression quality scenario: {DEFAULT_SCENARIO}")
     print(f"CCC threshold: 16 H100-equivalents = 15,840 TFLOPS FP16")
     print("=" * 80)
 
@@ -1264,3 +1345,66 @@ if __name__ == "__main__":
     print_countermeasure_ccc_threshold()
     print_countermeasure_memory_threshold()
     print_collateral_damage()
+
+    # -- PART 7: Compression quality sensitivity ---------------------------------
+
+    print("\n" + "=" * 80)
+    print("PART 7: COMPRESSION QUALITY SENSITIVITY")
+    print("=" * 80)
+    print(f"\nDefault scenario: {DEFAULT_SCENARIO}")
+    print("Compression quality factors (multiplicative on eta):")
+    for cr, factors in sorted(COMPRESSION_QUALITY.items()):
+        print(f"  {cr:>4}x: optimistic={factors['optimistic']:.2f}, "
+              f"expected={factors['expected']:.2f}, "
+              f"conservative={factors['conservative']:.2f}")
+
+    # Key scenarios under all three quality assumptions
+    key_scenarios = [
+        ("72 nodes, 48xA100, 16x comp", "48x A100 80GB", 72, 16, False),
+        ("500 nodes, 48xA100, 16x comp", "48x A100 80GB", 500, 16, False),
+        ("4000 nodes, 48xA100, 16x comp", "48x A100 80GB", 4000, 16, False),
+        ("2000 nodes, H100 FP8, 16x comp", "16x H100 FP8", 2000, 16, False),
+        ("2000 nodes, H100 FP8, 100x hier", "16x H100 FP8", 2000, 100, True),
+        ("4000 nodes, 48xA100, 100x comp", "48x A100 80GB", 4000, 100, False),
+    ]
+
+    print(f"\n  {'Scenario':>40} | {'Opt eta':>7} | {'Opt C_local':>11} | "
+          f"{'Exp eta':>7} | {'Exp C_local':>11} | "
+          f"{'Con eta':>7} | {'Con C_local':>11}")
+    print("  " + "-" * 115)
+
+    for label, cfg_name, n, comp, hier in key_scenarios:
+        results = {}
+        for sc in ["optimistic", "expected", "conservative"]:
+            if hier:
+                r = compute_hierarchical_scenario(cfg_name, n, compression=comp,
+                                                   scenario=sc)
+            else:
+                r = compute_scenario(cfg_name, n, compression=comp, scenario=sc)
+            results[sc] = r
+
+        opt, exp, con = results["optimistic"], results["expected"], results["conservative"]
+        print(f"  {label:>40} | {opt['eta']:>7.3f} | {opt['c_local']:>11.2e} | "
+              f"{exp['eta']:>7.3f} | {exp['c_local']:>11.2e} | "
+              f"{con['eta']:>7.3f} | {con['c_local']:>11.2e}")
+
+    # Bandwidth sensitivity under expected scenario (revised "3-6%" analysis)
+    print("\n\n--- Bandwidth sensitivity WITH compression quality (expected scenario) ---")
+    print("  Compare to PART 4 results (which used optimistic/no compression quality)")
+
+    for label, cfg_name, n, comp, hier in [
+        ("72 nodes, 48xA100, 16x", "48x A100 80GB", 72, 16, False),
+        ("2000 nodes, H100 FP8, hier+100x", "16x H100 FP8", 2000, 100, True),
+    ]:
+        print(f"\n  {label}:")
+        print(f"  {'BW (Mbps)':>10} | {'H':>5} | {'eta':>7} | {'C_local':>11} | {'x10^24':>7} | {'% of 1Gbps':>10}")
+
+        results_bw = bandwidth_sensitivity(cfg_name, n, compression=comp,
+                                           use_hierarchical=hier, scenario="expected")
+        best_c = max(r['c_local'] for r in results_bw)
+        for r in results_bw:
+            h = r.get("h_eff", r.get("h_min", 1))
+            h_str = f"{h:.0f}" if isinstance(h, float) else f"{h}"
+            pct = r['c_local'] / best_c * 100
+            print(f"  {r['bw_mbps']:>10} | {h_str:>5} | {r['eta']:>7.3f} | "
+                  f"{r['c_local']:>11.2e} | {r['strict_threshold_multiple']:>7.1f} | {pct:>9.0f}%")

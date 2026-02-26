@@ -279,14 +279,21 @@ Decentralized training with infrequent synchronization is not 100% compute-equiv
 
 ### 4.1 Efficiency Equation
 
-$$\eta = \max\!\left(0.4,\;\frac{1 - \alpha \cdot \log_{10}(H_{\text{eff}})}{P_{\text{strategy}}}\right)$$
+$$\eta = \eta_H \times \eta_{\text{compression}} \times \eta_{\text{replicas}}$$
 
+where:
+
+$$\eta_H = \max\!\left(0.4,\;\frac{1 - \alpha \cdot \log_{10}(H_{\text{eff}})}{P_{\text{strategy}}}\right)$$
+
+*   $\eta_H$ = sync interval penalty (quality loss from infrequent synchronization).
+*   $\eta_{\text{compression}}$ = compression quality factor (quality loss from pseudo-gradient compression). See §4.6.
+*   $\eta_{\text{replicas}}$ = replica count penalty (quality loss from averaging many replicas). See §4.7.
 *   $H_{\text{eff}}$ = effective inner steps between global syncs.
 *   $\alpha$ = sensitivity coefficient (base value ~0.08, reduced for larger models).
 *   $P_{\text{strategy}}$ = straggler strategy penalty (1.15 for threshold aggregation, 1.0 otherwise).
-*   Floor of 40% prevents nonsensical near-zero efficiency.
+*   Floor of 40% prevents nonsensical near-zero efficiency (applied to $\eta_H$ before multiplication).
 
-**Interpretation:** Efficiency $\eta < 1$ means the model requires $1/\eta$ times more tokens (and wall-clock time) to reach the same loss as fully-synchronous training.
+**Interpretation:** Efficiency $\eta < 1$ means the model requires $1/\eta$ times more tokens (and wall-clock time) to reach the same loss as fully-synchronous training. The three components are independent and multiplicative: a 2% compression penalty combined with a 12% sync penalty yields $0.98 \times 0.88 = 0.862$ total efficiency, not $1 - 0.02 - 0.12 = 0.86$.
 
 ### 4.2 Logarithmic Decay with $H$
 
@@ -323,6 +330,75 @@ $$H_{\text{eff}} = H_{\text{inner}} \cdot H_{\text{regional}}^{0.5}$$
 **Assumption:** Threshold aggregation (proceeding with the fastest 90% of nodes, discarding stragglers) introduces a 15% token-efficiency penalty because the excluded gradients introduce staleness.
 
 This is an engineering estimate. Asynchronous/bounded-staleness SGD literature ([Ho et al. 2013](https://proceedings.neurips.cc/paper/2013/hash/b7bb35b9c6ca2aee2df08cf09d7016c2-Abstract.html)) shows degradation from stale gradients, but the specific 15% value is not derived from a published measurement at this scale.
+
+### 4.6 Compression Quality Factor
+
+$$\eta_{\text{compression}} = f(C_r, \text{scenario})$$
+
+where $C_r$ is the pseudo-gradient compression ratio and "scenario" selects from three uncertainty levels.
+
+**Parameterization:**
+
+| Compression Ratio ($C_r$) | Optimistic | Expected | Conservative |
+|:--|:--|:--|:--|
+| 1× (uncompressed) | 1.00 | 1.00 | 1.00 |
+| 4× (FP4 only) | 1.00 | 1.00 | 0.99 |
+| 16× (FP4 + 4× sparse) | 1.00 | 0.98 | 0.95 |
+| 100× (FP4 + 25× sparse, or 2-bit + TopK) | 0.99 | 0.95 | 0.90 |
+
+For compression ratios between these thresholds, the simulator interpolates log-linearly (i.e., linearly in $\log_{10}(C_r)$). For ratios above 100×, the 100× value is used (no further extrapolation).
+
+**Justification for each threshold:**
+
+*   **4× (FP4 only):** Validated lossless at 4B parameters by [Streaming DiLoCo (Douillard et al., 2025)](https://arxiv.org/abs/2501.18512) using E3M0 format and at 15B by [MuLoCo (Li et al., 2025)](https://arxiv.org/abs/2505.23725). Conservative 1% accounts for extrapolation to 100B+ scale where outlier accumulation is possible but undemonstrated.
+
+*   **16× (FP4 + 4× sparsification):** The FP4 component is well-validated (see above). The sparsification component (retaining 25% of pseudo-gradient values) has less direct evidence at scale. Expected 2% penalty accounts for the combined extrapolation. Conservative 5% covers worst-case interactions between quantization and sparsification at 100B+ scale.
+
+*   **100× (aggressive compression):** Only validated at 512M–1B scale. [SparseLoCo (Hu et al., 2025)](https://arxiv.org/abs/2508.15706) shows TopK 3% + 2-bit quantization with error feedback beats vanilla DiLoCo at 512M. [MuLoCo](https://arxiv.org/abs/2505.23725) shows 2-bit + error feedback is near-lossless at 15B. However, extrapolation to 100B+ with 2,000+ replicas and H=200+ is highly uncertain. Expected 5% penalty reflects the compounding of: (a) scale gap (~100× from 1B to 100B+), (b) untested replica counts, and (c) possible error accumulation without error feedback at very high compression. Conservative 10% covers worst-case degradation.
+
+**Scenarios:**
+
+*   **Optimistic:** Assumes compression penalties are minimal even at scale. Appropriate if compression quality improves with model size (plausible but unproven). Reproduces the pre-compression-quality model output.
+*   **Expected:** Central estimate used as the default throughout the analysis. Incorporates modest penalties for extrapolation beyond validated scales.
+*   **Conservative:** Assumes compression penalties are near the upper end of what the literature suggests. Appropriate for sensitivity analysis and worst-case planning.
+
+**Evidence:**
+*   [Streaming DiLoCo (Douillard et al., 2025)](https://arxiv.org/abs/2501.18512): FP4 (E3M0) quantization at 4B params, H=100, 2 replicas. Lossless.
+*   [MuLoCo (Li et al., 2025)](https://arxiv.org/abs/2505.23725): FP4 and 2-bit + error feedback at 15B params. Near-lossless.
+*   [SparseLoCo (Hu et al., 2025)](https://arxiv.org/abs/2508.15706): TopK 3% + 2-bit at 512M params. Lossless (beats vanilla DiLoCo).
+*   [INTELLECT-1 (Jaghouar et al., 2024)](https://arxiv.org/abs/2412.01152): int8 compression at 10B params over real WAN. Negligible degradation.
+*   [DiLoCoX (Chen et al., 2025)](https://arxiv.org/abs/2506.21263): 107B model, 20 DiLoCo replicas. 0.3 loss gap vs AllReduce (not compression-specific but provides scale anchor).
+
+**Limitation:** The compression quality factors are engineering estimates, not published empirical measurements at 100B+ scale. The expected values should be treated as the simulator's best guess, not as established findings. See `Governance_Analysis.md`, Section 11 for the full literature review.
+
+### 4.7 Replica Count Penalty
+
+$$\eta_{\text{replicas}} = \max\!\left(0.85,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
+
+where $P_B$ is the model size in billions of parameters and $N$ is the number of replicas (nodes in flat DiLoCo, or groups in hierarchical DiLoCo).
+
+**Parameterization:**
+
+*   Base penalty: ~0.5% per doubling of replicas at 2.4B parameters.
+*   Scale adjustment: penalty decreases inversely with model size (larger models are more robust to multi-replica averaging).
+*   Floor of 85% prevents nonsensical extreme penalties at very high replica counts.
+
+**Example values:**
+
+| Replicas ($N$) | 2.4B model | 10B model | 100B model | 240B model |
+|:--|:--|:--|:--|:--|
+| 2 | 0.995 | 0.999 | 1.000 | 1.000 |
+| 8 | 0.985 | 0.996 | 1.000 | 1.000 |
+| 72 | 0.969 | 0.993 | 0.999 | 1.000 |
+| 500 | 0.955 | 0.989 | 0.999 | 1.000 |
+| 2,000 | 0.945 | 0.987 | 0.999 | 1.000 |
+| 4,000 | 0.940 | 0.986 | 0.999 | 1.000 |
+
+**Evidence:**
+*   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 5 shows that at 2.4B parameters, $M=8$ replicas incur ~1.2% penalty vs $M=1$. The penalty decreases with model size.
+*   [Epoch AI (2024)](https://epoch.ai/blog/training-compute-of-frontier-ai-models): projects that $M=10{,}000$ replicas would require ~6× FLOP multiplier, suggesting steep degradation at very high counts. The simulator's floor of 85% is conservative relative to this projection.
+
+**Limitation:** The formula is calibrated to $M \leq 8$ at 2.4B scale. Extrapolation to $M=2{,}000+$ is weakly supported. The 85% floor is an engineering choice, not a literature-derived bound. At the 100B+ model sizes used in the governance analysis, the replica penalty is negligible (<0.1%) for all scenarios tested.
 
 ---
 
@@ -445,6 +521,7 @@ On top of precision, the user can apply further compression via quantization and
 | `regionalBandwidth` | Mbps | 1000 | Intra-group bandwidth. |
 | `regionalLatency` | ms | 20 | Intra-group round-trip time. |
 | `regionalSteps` | Integer | 16 | Regional sync cycles per global sync. |
+| `compressionScenario` | Enum | expected | Compression quality uncertainty level (optimistic, expected, conservative). |
 
 ---
 
@@ -457,6 +534,9 @@ On top of precision, the user can apply further compression via quantization and
 5.  **Asynchronous methods:** The simulator only models synchronous protocols (DiLoCo, hierarchical DiLoCo). Fully asynchronous approaches ([Diskin et al. 2021](https://arxiv.org/abs/2106.10207)) are not modeled.
 6.  **PP mode only models forward activations.** Real pipeline parallelism also sends gradients backward through the pipeline, roughly doubling communication per micro-batch.
 7.  **EP memory model is simplified.** The EP memory reduction assumes a clean split between shared and expert parameters ($P_{\text{shared}} = P_{\text{active}}$). Real MoE architectures may have routing layers, load-balancing buffers, and token-drop buffers that add overhead beyond this estimate.
+8.  **Compression quality factors are extrapolations.** The $\eta_{\text{compression}}$ values at 16× and 100× are engineering estimates based on experiments at 512M–15B parameters (see §4.6). No published experiment has measured compression quality degradation at the 100B+ scale the simulator targets. The three-scenario approach (optimistic/expected/conservative) is designed to bound this uncertainty rather than resolve it.
+9.  **Replica penalty is weakly calibrated.** The $\eta_{\text{replicas}}$ formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. At the 100B+ scale used in the governance analysis, the penalty is negligible, but it could be significant at small model sizes with many replicas — a regime not targeted by this analysis.
+10. **Compression quality and H are modeled as independent.** The three efficiency components ($\eta_H$, $\eta_{\text{compression}}$, $\eta_{\text{replicas}}$) are multiplied independently. In reality, larger H produces more divergent pseudo-gradients that may be harder to compress (negative interaction) or may have lower effective rank that compresses better (positive interaction). This interaction is not modeled.
 
 ---
 

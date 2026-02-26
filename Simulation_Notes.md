@@ -34,23 +34,30 @@ Under the [MIRI treaty proposal](https://arxiv.org/abs/2511.10783), clusters exc
 *   **Network:** 100 Mbps symmetric WAN, 100 ms latency
 *   **Algorithm:** Streaming DiLoCo, 16x compression, optimized inner steps
 *   **Time Limit:** 1.5 years (548 days), based on slower growth rates under treaty restrictions
+*   **Compression quality scenario:** Expected (η_compression = 0.98 for 16x)
 
 ### Results
 
 | Nodes | GPUs | Est. Cost | Inner Steps H | $\eta$ | C_local (FLOP) | x Strict Threshold |
 |:--|:--|:--|:--|:--|:--|:--|
 | 1 | 48 | $0.7M | — | 1.000 | 2.84e23 | 0.3x |
-| 4 | 192 | $2.9M | 168 | 0.879 | **9.97e23** | **1.0x** |
-| 8 | 384 | $5.8M | 176 | 0.878 | 1.99e24 | 2.0x |
-| 16 | 768 | $12M | 183 | 0.877 | 3.98e24 | 4.0x |
-| 72 | 3,456 | $52M | 200 | 0.875 | **1.79e25** | **17.9x** |
-| 144 | 6,912 | $104M | 207 | 0.874 | 3.57e25 | 35.7x |
-| 500 | 24,000 | $360M | 221 | 0.873 | 1.24e26 | 123.8x |
+| 4 | 192 | $2.9M | 168 | 0.862 | **9.77e23** | **1.0x** |
+| 8 | 384 | $5.8M | 176 | 0.861 | 1.95e24 | 2.0x |
+| 16 | 768 | $12M | 183 | 0.860 | 3.90e24 | 3.9x |
+| 72 | 3,456 | $52M | 200 | 0.858 | **1.75e25** | **17.5x** |
+| 144 | 6,912 | $104M | 207 | 0.857 | 3.50e25 | 35.0x |
+| 500 | 24,000 | $360M | 221 | 0.855 | 1.21e26 | 121.2x |
 
 *   **Minimum to reach threshold:** ~4 nodes (192 A100s, ~$3M)
 *   **Reference case (72 nodes):** 240B model, 14.2T tokens, 3x Chinchilla overtraining
 *   **Bottleneck:** Compute-bound (H optimized to balance compute and communication)
-*   **Algorithmic efficiency:** Stable at ~87% across all node counts
+*   **Algorithmic efficiency:** Stable at ~86% across all node counts (η = η_H × η_compression × η_replicas)
+
+### Compression Quality Uncertainty
+*   **Compression ratio:** 16x (FP4 quantization + 4x sparsification)
+*   **Confidence:** Moderate-high. FP4 pseudo-gradient quantization validated lossless at 4B (Streaming DiLoCo, 2501.18512) and 15B (MuLoCo, 2505.23725). Sparsification component has less direct evidence at scale.
+*   **Range:** C_local for 72 nodes = 1.70e25 (conservative) to 1.79e25 (optimistic), ±2.5% from expected.
+*   The 16x compression scenarios are the best-supported by the literature and constitute the primary results of the analysis.
 
 ### Conclusions
 The 10^24 FLOP Strict Threshold can be exceeded with as few as 4 sub-CCC nodes. The primary barrier to this evasion is not the compute threshold but the treaty's chip tracking and consolidation provisions. See [Governance_Analysis.md](Governance_Analysis.md) for full implications.
@@ -61,55 +68,68 @@ The 10^24 FLOP Strict Threshold can be exceeded with as few as 4 sub-CCC nodes. 
 
 Extension of Scenario 2 to explore whether state-actor-level resources could achieve 10^27 FLOP using all simulator-supported techniques. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 8.
 
-### Configurations Compared
+### Configurations Compared (Expected Scenario)
 
 | Config | Hardware | Technique | Nodes | GPUs | Cost | $\eta$ | C_local (FLOP) |
 |:--|:--|:--|:--|:--|:--|:--|:--|
-| A | 48x A100 FP16 | Flat DiLoCo, 16x comp | 4,000 | 192,000 | $2.9B | 0.871 | 9.87e26 |
-| B | 48x A100 FP16 | Hierarchical, 16x comp | 4,000 | 192,000 | $2.9B | 0.902 | 1.02e27 |
-| C | 16x H100 FP8 | Flat DiLoCo, 16x comp | 2,000 | 32,000 | $960M | 0.862 | 1.03e27 |
-| D | 16x H100 FP8 | Hierarchical, 16x comp | 2,000 | 32,000 | $960M | 0.896 | 1.07e27 |
-| E | 48x A100 FP16 | Flat DiLoCo, 100x comp | 4,000 | 192,000 | $2.9B | 0.914 | 1.04e27 |
-| F | 16x H100 FP8 | Hier + 100x comp | 2,000 | 32,000 | $960M | 0.941 | **1.13e27** |
+| A | 48x A100 FP16 | Flat DiLoCo, 16x comp | 4,000 | 192,000 | $2.9B | 0.853 | 9.67e26 |
+| B | 48x A100 FP16 | Hierarchical, 16x comp | 4,000 | 192,000 | $2.9B | 0.883 | 1.00e27 |
+| C | 16x H100 FP8 | Flat DiLoCo, 16x comp | 2,000 | 32,000 | $960M | 0.844 | 1.01e27 |
+| D | 16x H100 FP8 | Hierarchical, 16x comp | 2,000 | 32,000 | $960M | 0.876 | 1.05e27 |
+| E | 48x A100 FP16 | Flat DiLoCo, 100x comp | 4,000 | 192,000 | $2.9B | 0.868 | 9.84e26 |
+| F | 16x H100 FP8 | Hier + 100x comp | 2,000 | 32,000 | $960M | 0.892 | **1.07e27** |
 
 *   Hierarchical: groups of 8 nodes, 1 Gbps regional bandwidth, 20 ms latency
 *   100x compression: FP4 pseudo-gradient quantization + aggressive sparsification
+*   All results use the **expected** compression quality scenario; optimistic/conservative ranges in §3a below
+
+### Compression Quality Ranges
+
+| Config | Comp | Optimistic C_local | Expected C_local | Conservative C_local | Confidence |
+|:--|:--|:--|:--|:--|:--|
+| A-D | 16x | +2% from expected | baseline | −3% from expected | Moderate-high |
+| E | 100x | 1.03e27 | 9.84e26 | 9.32e26 | Low-moderate |
+| F | 100x | 1.12e27 | 1.07e27 | 1.01e27 | Low-moderate |
+
+*   **16x configs (A-D):** FP4 quantization component well-validated at 4B-15B. Expected 2% penalty accounts for extrapolation to 91-240B scale. Narrow uncertainty range (±2-3%).
+*   **100x configs (E-F):** Only validated at 512M-1B scale (SparseLoCo 2508.15706). Expected 5% penalty; conservative 10%. Wide uncertainty range (±5-10%). Config F conservative estimate (1.01e27) still exceeds 10^27, but barely.
 
 ### Key Findings
 
 *   **10^27 requires 2,000-4,000 nodes ($1-3B):** state-actor-level investment
 *   **FP8 is most cost-effective:** 2x compute throughput from same CCC-threshold node, 3x fewer GPUs needed
-*   **Config F is optimal:** hierarchical + 100x compression + FP8 achieves $\eta = 0.941$ and 1.13e27 FLOP at $960M
-*   **Hierarchical DiLoCo:** +3pp efficiency over flat (0.902 vs 0.871) by reducing effective H from 244 to 65
+*   **Config F is optimal:** hierarchical + 100x compression + FP8 achieves $\eta = 0.892$ and 1.07e27 FLOP at $960M (expected)
+*   **Hierarchical DiLoCo:** +3pp efficiency over flat (0.883 vs 0.853) by reducing effective H from 244 to 65
 *   **MoE+EP:** doesn't increase C_local but enables 600B-1T MoE models within same compute budget
+*   **Compression quality is the largest source of uncertainty** at the 100x level, wider than bandwidth sensitivity
 
 ### Conclusions
 
-10^27 FLOP is technically achievable with DiLoCo over WAN, but the hardware procurement ($1-3B) is the binding constraint. The treaty's financial monitoring and chip tracking provisions are the effective enforcement mechanism at this scale, not the compute threshold.
+10^27 FLOP is technically achievable with DiLoCo over WAN under the expected compression quality scenario, but the hardware procurement ($1-3B) is the binding constraint. The treaty's financial monitoring and chip tracking provisions are the effective enforcement mechanism at this scale, not the compute threshold. The 100x compression results should be interpreted with caution — they depend on unvalidated extrapolation of compression quality to 91B+ scale.
 
 ---
 
 ## Scenario 4: Network Sensitivity — Bandwidth, Latency, and Deployment Profiles
 
-Tests whether degraded network conditions (lower bandwidth, higher latency) significantly reduce achievable compute. Uses real-world measured latency values from Azure, AWS, Verizon, and Epsilon Telecom. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 9.
+Tests whether degraded network conditions (lower bandwidth, higher latency) significantly reduce achievable compute. Uses real-world measured latency values from Azure, AWS, Verizon, and Epsilon Telecom. All results use the **expected** compression quality scenario. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 9.
 
 ### Bandwidth Sensitivity (100 ms latency, varying bandwidth)
 
-**72 nodes, 48x A100 FP16, 16x compression:**
+**72 nodes, 48x A100 FP16, 16x compression (expected scenario):**
 
 | BW (Mbps) | H_min | $\eta$ | C_local (FLOP) | % of best |
 |:--|:--|:--|:--|:--|
-| 10 | 1,994 | 0.821 | 1.68e25 | 88% |
-| 100 (baseline) | 200 | 0.875 | 1.79e25 | 94% |
-| 1,000 | 20 | 0.929 | 1.90e25 | 100% |
+| 10 | 1,994 | 0.804 | 1.64e25 | 88% |
+| 100 (baseline) | 200 | 0.858 | 1.75e25 | 94% |
+| 1,000 | 20 | 0.911 | 1.86e25 | 100% |
 
-**2,000 nodes, 16x H100 FP8, hier+100x (Config F):**
+**2,000 nodes, 16x H100 FP8, hier+100x (Config F, expected scenario):**
 
 | BW (Mbps) | H_eff | $\eta$ | C_local (FLOP) | % of best |
 |:--|:--|:--|:--|:--|
-| 10 | 33 | 0.913 | 1.10e27 | 95% |
-| 100 (baseline) | 11 | 0.941 | 1.13e27 | 98% |
-| 1,000 | 4 | 0.964 | 1.16e27 | 100% |
+| 10 | 33 | 0.866 | 1.04e27 | 95% |
+| 100 (baseline) | 11 | 0.892 | 1.07e27 | 97% |
+| 1,000 | 4 | 0.914 | 1.10e27 | 100% |
 
 ### Latency Sensitivity (100 Mbps, varying real-world latency)
 
@@ -117,35 +137,51 @@ Tests whether degraded network conditions (lower bandwidth, higher latency) sign
 
 ### Deployment Profile Summary (combined BW + latency)
 
-**72 nodes, 48x A100 FP16, 16x comp:**
+**72 nodes, 48x A100 FP16, 16x comp (expected scenario):**
 
 | Deployment | BW | RTT | $\eta$ | C_local | % of best |
 |:--|:--|:--|:--|:--|:--|
-| Colocated (same metro) | 1 Gbps | 5 ms | 0.929 | 1.90e25 | 100% |
-| Continental US | 100 Mbps | 65 ms | 0.875 | 1.79e25 | 94% |
-| Global worst-case | 10 Mbps | 340 ms | 0.821 | 1.68e25 | 88% |
+| Colocated (same metro) | 1 Gbps | 5 ms | 0.911 | 1.86e25 | 100% |
+| Continental US | 100 Mbps | 65 ms | 0.858 | 1.75e25 | 94% |
+| Global worst-case | 10 Mbps | 340 ms | 0.804 | 1.64e25 | 88% |
 
-**2,000 nodes, 16x H100 FP8, hier+100x:**
+**2,000 nodes, 16x H100 FP8, hier+100x (expected scenario):**
 
 | Deployment | BW | RTT | $\eta$ | C_local | % of best |
 |:--|:--|:--|:--|:--|:--|
-| Colocated (same metro) | 1 Gbps | 5 ms | 0.964 | 1.16e27 | 100% |
-| Continental US | 100 Mbps | 65 ms | 0.941 | 1.13e27 | 97% |
-| Global worst-case | 10 Mbps | 340 ms | 0.913 | 1.10e27 | 95% |
+| Colocated (same metro) | 1 Gbps | 5 ms | 0.914 | 1.10e27 | 100% |
+| Continental US | 100 Mbps | 65 ms | 0.892 | 1.07e27 | 97% |
+| Global worst-case | 10 Mbps | 340 ms | 0.866 | 1.04e27 | 95% |
+
+### Decomposing the Efficiency Gap
+
+The total efficiency gap between colocated (1 Gbps) and global worst-case (10 Mbps) has two distinct sources:
+
+**72 nodes, 16x compression:**
+*   Colocated η = 0.911 → Global η = 0.804 → total gap = 10.7 percentage points
+*   Of which: ~5.3pp from η_H (larger H at lower bandwidth) + ~2pp from η_compression (16x, expected) + ~3.4pp from interaction effects
+*   The bandwidth sensitivity figures include compression quality — the η_H penalty alone (increasing H from 20 to 1,994) would be ~5.4%, but the combined model shows ~12% total gap.
+
+**2,000 nodes, 100x hier compression:**
+*   Colocated η = 0.914 → Global η = 0.866 → total gap = 4.8 percentage points
+*   The 100x compression quality penalty (~5% expected) is already baked into all rows. The bandwidth-only component is smaller for hierarchical configs because regional syncs limit effective H.
 
 ### Conclusions
 
-*   **Bandwidth is the only network parameter that matters**, and even a 10x bandwidth reduction (100→10 Mbps) costs only 6-12% of C_local. DiLoCo compensates by increasing H.
+*   **Bandwidth matters moderately**, and a 10x bandwidth reduction (100→10 Mbps) costs 6-12% of C_local. DiLoCo compensates by increasing H, but the combined bandwidth + compression quality penalty is larger than the bandwidth penalty alone.
 *   **Latency is irrelevant** for any realistic model size and compression level. Sync volumes dominate RTT by 4-5 orders of magnitude.
-*   **10^26 is achievable under all network conditions** (500 nodes, 48x A100, even at 10 Mbps/340 ms).
-*   **10^27 requires hierarchical+100x at very low bandwidths** (flat DiLoCo falls short below ~50 Mbps), but with Config F it is achievable even at 10 Mbps globally.
+*   **10^26 is achievable under all network conditions** (500 nodes, 48x A100, even at 10 Mbps/340 ms) with high confidence.
+*   **10^27 requires hierarchical+100x at very low bandwidths** (flat DiLoCo falls short below ~50 Mbps), but with Config F it is achievable even at 10 Mbps globally under the expected compression quality scenario.
 *   **Network-level enforcement is ineffective.** An evader using consumer broadband loses at most 12% of compute versus an optimized local deployment. The treaty cannot rely on network monitoring or bandwidth restrictions to prevent distributed training.
+*   **Note:** The bandwidth sensitivity figures in this section incorporate compression quality penalties. Prior to the compression quality model update, the 10 Mbps → 1 Gbps gap was reported as 6-12% (η_H only). The combined model shows the same bandwidth range but with lower absolute η values due to the compression quality and replica penalty factors.
 
 ---
 
 ## Scenario 5: Treaty Modification Analysis — Countermeasure Effectiveness
 
 Evaluates proposed treaty modifications to close the distributed training loophole. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 10.
+
+**Note on compression quality:** The countermeasure analysis depends on the *relative* cost to achieve compute thresholds (e.g., nodes needed for 10^24), not on absolute η values. Since compression quality is a multiplicative factor applied uniformly across all node configurations, it does not materially affect the countermeasure conclusions: lowering the CCC threshold still requires the same cost regardless of compression quality scenario, and the effectiveness rankings of countermeasures are unchanged. The nodes-to-threshold values in the tables below are computed under the expected scenario but vary by <5% between optimistic and conservative.
 
 ### Lowering the CCC Compute Threshold
 
