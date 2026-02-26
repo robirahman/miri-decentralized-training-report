@@ -83,6 +83,76 @@ CONFIGS_FP8 = {
 }
 
 
+# ── Countermeasure analysis configs ───────────────────────────────────────────
+
+# Lowered CCC threshold: max A100-80GB node under each threshold
+# A100 80GB: 312 TFLOPS FP16 each, $15k each, 80 GB VRAM each
+# Max GPUs = floor(threshold_h100_equiv * 990 / 312)
+LOWERED_CCC_A100 = {
+    "16 H100-eq (current)": {"gpu_count": 48, "pflops": 48 * 312e12 / 1e15,
+                              "vram_gb": 48 * 80, "gpu_cost_usd": 15_000,
+                              "h100_equiv": 48 * 312 / 990},
+    "8 H100-eq":  {"gpu_count": 25, "pflops": 25 * 312e12 / 1e15,
+                    "vram_gb": 25 * 80, "gpu_cost_usd": 15_000,
+                    "h100_equiv": 25 * 312 / 990},
+    "4 H100-eq":  {"gpu_count": 12, "pflops": 12 * 312e12 / 1e15,
+                    "vram_gb": 12 * 80, "gpu_cost_usd": 15_000,
+                    "h100_equiv": 12 * 312 / 990},
+    "2 H100-eq":  {"gpu_count": 6,  "pflops": 6 * 312e12 / 1e15,
+                    "vram_gb": 6 * 80,  "gpu_cost_usd": 15_000,
+                    "h100_equiv": 6 * 312 / 990},
+    "1 H100-eq":  {"gpu_count": 3,  "pflops": 3 * 312e12 / 1e15,
+                    "vram_gb": 3 * 80,  "gpu_cost_usd": 15_000,
+                    "h100_equiv": 3 * 312 / 990},
+}
+
+# Lowered CCC threshold: max H100 SXM node under each threshold (FP8 compute)
+# H100 SXM: 990 TFLOPS FP16 each (1980 FP8), $30k each, 80 GB VRAM each
+LOWERED_CCC_H100_FP8 = {
+    "16 H100-eq (current)": {"gpu_count": 16, "pflops": 16 * 1980e12 / 1e15,
+                              "pflops_fp16": 15.84, "vram_gb": 16 * 80,
+                              "gpu_cost_usd": 30_000, "h100_equiv": 16.0,
+                              "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
+    "8 H100-eq":  {"gpu_count": 8,  "pflops": 8 * 1980e12 / 1e15,
+                    "pflops_fp16": 7.92,  "vram_gb": 8 * 80,
+                    "gpu_cost_usd": 30_000, "h100_equiv": 8.0,
+                    "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
+    "4 H100-eq":  {"gpu_count": 4,  "pflops": 4 * 1980e12 / 1e15,
+                    "pflops_fp16": 3.96,  "vram_gb": 4 * 80,
+                    "gpu_cost_usd": 30_000, "h100_equiv": 4.0,
+                    "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
+    "2 H100-eq":  {"gpu_count": 2,  "pflops": 2 * 1980e12 / 1e15,
+                    "pflops_fp16": 1.98,  "vram_gb": 2 * 80,
+                    "gpu_cost_usd": 30_000, "h100_equiv": 2.0,
+                    "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
+    "1 H100-eq":  {"gpu_count": 1,  "pflops": 1 * 1980e12 / 1e15,
+                    "pflops_fp16": 0.99,  "vram_gb": 1 * 80,
+                    "gpu_cost_usd": 30_000, "h100_equiv": 1.0,
+                    "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
+}
+
+# Memory thresholds: VRAM limits that trigger CCC registration
+MEMORY_THRESHOLDS_GB = [256, 512, 1024, 2048]
+
+# Collateral damage: representative legitimate computing systems
+LEGITIMATE_SYSTEMS = [
+    {"name": "Consumer gaming PC (1x RTX 5090)",    "gpus": 1,   "vram_gb": 32,    "tflops_fp16": 104,  "h100_equiv": 0.11, "category": "Consumer"},
+    {"name": "Enthusiast workstation (2x RTX 4090)", "gpus": 2,   "vram_gb": 48,    "tflops_fp16": 330,  "h100_equiv": 0.33, "category": "Consumer"},
+    {"name": "Research workstation (4x A100 40GB)",  "gpus": 4,   "vram_gb": 160,   "tflops_fp16": 1248, "h100_equiv": 1.26, "category": "Research"},
+    {"name": "Research workstation (4x A100 80GB)",  "gpus": 4,   "vram_gb": 320,   "tflops_fp16": 1248, "h100_equiv": 1.26, "category": "Research"},
+    {"name": "AI lab server (8x A100 80GB)",         "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 2496, "h100_equiv": 2.52, "category": "Research"},
+    {"name": "AWS p4d.24xlarge (8x A100 40GB)",      "gpus": 8,   "vram_gb": 320,   "tflops_fp16": 2496, "h100_equiv": 2.52, "category": "Cloud"},
+    {"name": "AWS p5.48xlarge (8x H100 SXM)",        "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Cloud"},
+    {"name": "HPC simulation node (4x A100 80GB)",   "gpus": 4,   "vram_gb": 320,   "tflops_fp16": 1248, "h100_equiv": 1.26, "category": "Scientific"},
+    {"name": "Molecular dynamics cluster (8x H100)",  "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Scientific"},
+    {"name": "Inference server (8x L40S)",           "gpus": 8,   "vram_gb": 384,   "tflops_fp16": 1472, "h100_equiv": 1.49, "category": "Commercial"},
+    {"name": "Rendering farm node (4x RTX 6000 Ada)","gpus": 4,   "vram_gb": 192,   "tflops_fp16": 597,  "h100_equiv": 0.60, "category": "Commercial"},
+    {"name": "Princeton AI cluster node (8x H100)",  "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Research"},
+    {"name": "DGX A100 (8x A100 80GB)",             "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 2496, "h100_equiv": 2.52, "category": "Research"},
+    {"name": "DGX H100 (8x H100 SXM)",              "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Research"},
+]
+
+
 # ── Simulator formulas ────────────────────────────────────────────────────────
 
 def straggler_factor(n):
@@ -707,6 +777,282 @@ def print_deployment_profiles(config_name, n_nodes, compression=COMPRESSION,
     return results
 
 
+def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
+                             time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
+                             bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                             bw_bps=None, latency_s=None):
+    """Compute scenario for an arbitrary config dict (not from named configs)."""
+    if "bytes_per_param" in cfg:
+        bytes_per_param = cfg["bytes_per_param"]
+    if "bits_per_pseudo_grad" in cfg:
+        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+
+    if time_seconds is None:
+        time_seconds = TIME_SECONDS
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    if latency_s is None:
+        latency_s = LATENCY_S
+
+    pflops = cfg["pflops"]
+    vram_gb = cfg["vram_gb"]
+
+    max_params_b = vram_gb / bytes_per_param
+    params_b = max_params_b
+    params = params_b * 1e9
+
+    effective_flops = pflops * 1e15 * MFU
+    t_comp = (6 * params * LOCAL_BATCH) / effective_flops
+    v_bits = params * bits_per_pseudo_grad / compression
+    t_sync_base = 2 * v_bits / bw_bps + latency_s
+    f_n = straggler_factor(n_nodes)
+    t_sync = t_sync_base * f_n
+
+    if n_nodes == 1:
+        h_min = 1
+        eta = 1.0
+    else:
+        h_min = math.ceil(t_sync / t_comp)
+        eta = efficiency(h_min, params_b)
+
+    c_actual = n_nodes * effective_flops * time_seconds
+    c_local = c_actual * eta
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+
+    return {
+        "n_nodes": n_nodes,
+        "total_gpus": n_nodes * cfg["gpu_count"],
+        "pflops_per_node": pflops,
+        "vram_gb": vram_gb,
+        "max_params_b": max_params_b,
+        "h_min": h_min,
+        "eta": eta,
+        "c_local": c_local,
+        "cost_usd": cost_usd,
+        "strict_threshold_multiple": c_local / 1e24,
+    }
+
+
+def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
+                          bytes_per_param=BYTES_PER_PARAM,
+                          bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD):
+    """Binary search for minimum nodes to reach target_flop."""
+    if "bytes_per_param" in cfg:
+        bytes_per_param = cfg["bytes_per_param"]
+    if "bits_per_pseudo_grad" in cfg:
+        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+
+    # Check if 1 node suffices
+    r = compute_generic_scenario(cfg, 1, compression=compression,
+                                 bytes_per_param=bytes_per_param,
+                                 bits_per_pseudo_grad=bits_per_pseudo_grad)
+    if r["c_local"] >= target_flop:
+        return r
+
+    # Binary search between 2 and 100000
+    lo, hi = 2, 100000
+    while lo < hi:
+        mid = (lo + hi) // 2
+        r = compute_generic_scenario(cfg, mid, compression=compression,
+                                     bytes_per_param=bytes_per_param,
+                                     bits_per_pseudo_grad=bits_per_pseudo_grad)
+        if r["c_local"] >= target_flop:
+            hi = mid
+        else:
+            lo = mid + 1
+
+    return compute_generic_scenario(cfg, lo, compression=compression,
+                                    bytes_per_param=bytes_per_param,
+                                    bits_per_pseudo_grad=bits_per_pseudo_grad)
+
+
+def print_countermeasure_ccc_threshold():
+    """Analyze effect of lowering CCC compute threshold."""
+    print("\n" + "=" * 100)
+    print("COUNTERMEASURE: LOWERING CCC COMPUTE THRESHOLD")
+    print("=" * 100)
+
+    targets = [1e24, 1e25, 1e26]
+    target_labels = ["10^24", "10^25", "10^26"]
+
+    # A100-based (FP16) nodes
+    print("\n--- A100 80GB nodes (FP16 training, max VRAM per compute) ---")
+    print(f"\n  {'CCC Threshold':>20} | {'GPUs/node':>9} | {'PFLOPS':>7} | {'VRAM':>7} | "
+          f"{'Max Model':>10} | {'H100-eq':>7}")
+    print("  " + "-" * 75)
+    for label, cfg in LOWERED_CCC_A100.items():
+        model_b = cfg["vram_gb"] / BYTES_PER_PARAM
+        print(f"  {label:>20} | {cfg['gpu_count']:>9} | {cfg['pflops']:>7.2f} | "
+              f"{cfg['vram_gb']:>5} GB | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f}")
+
+    print(f"\n  {'CCC Threshold':>20} | ", end="")
+    for tl in target_labels:
+        print(f"{'N->' + tl:>18} | {'Cost':>8} | ", end="")
+    print()
+    print("  " + "-" * 105)
+
+    for label, cfg in LOWERED_CCC_A100.items():
+        print(f"  {label:>20} | ", end="")
+        for target in targets:
+            r = find_nodes_for_target(cfg, target)
+            cost = r["cost_usd"]
+            cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+            print(f"{r['n_nodes']:>18,} | {cost_str:>8} | ", end="")
+        print()
+
+    # H100-based (FP8) nodes
+    print("\n--- H100 SXM nodes (FP8 training, max compute per CCC threshold) ---")
+    print(f"\n  {'CCC Threshold':>20} | {'GPUs/node':>9} | {'FP8 PFLOPS':>10} | {'VRAM':>7} | "
+          f"{'Max Model':>10} | {'H100-eq':>7}")
+    print("  " + "-" * 80)
+    for label, cfg in LOWERED_CCC_H100_FP8.items():
+        model_b = cfg["vram_gb"] / cfg["bytes_per_param"]
+        print(f"  {label:>20} | {cfg['gpu_count']:>9} | {cfg['pflops']:>10.2f} | "
+              f"{cfg['vram_gb']:>5} GB | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f}")
+
+    print(f"\n  {'CCC Threshold':>20} | ", end="")
+    for tl in target_labels:
+        print(f"{'N->' + tl:>18} | {'Cost':>8} | ", end="")
+    print()
+    print("  " + "-" * 105)
+
+    for label, cfg in LOWERED_CCC_H100_FP8.items():
+        print(f"  {label:>20} | ", end="")
+        for target in targets:
+            r = find_nodes_for_target(cfg, target)
+            cost = r["cost_usd"]
+            cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+            print(f"{r['n_nodes']:>18,} | {cost_str:>8} | ", end="")
+        print()
+
+
+def print_countermeasure_memory_threshold():
+    """Analyze effect of adding memory (VRAM) to CCC definition."""
+    print("\n" + "=" * 100)
+    print("COUNTERMEASURE: ADDING MEMORY (VRAM) THRESHOLD TO CCC DEFINITION")
+    print("=" * 100)
+
+    print("\n  Current exploit: 48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv (under 16)")
+    print("  Adding a VRAM threshold constrains the max node to min(compute_limit, memory_limit)")
+
+    targets = [1e24, 1e25, 1e26]
+    target_labels = ["10^24", "10^25", "10^26"]
+
+    print(f"\n  {'VRAM Limit':>12} | {'Max A100s':>9} | {'Actual VRAM':>11} | {'PFLOPS':>7} | "
+          f"{'Max Model':>10} | {'H100-eq':>7} | ", end="")
+    for tl in target_labels:
+        print(f"{'N->' + tl:>10} | {'Cost':>8} | ", end="")
+    print()
+    print("  " + "-" * 140)
+
+    for mem_limit in MEMORY_THRESHOLDS_GB:
+        # Max A100 80GB GPUs under both compute (16 H100-eq) and memory limits
+        max_by_compute = 48  # floor(16 * 990 / 312) = 50, but we use 48 to stay under
+        max_by_memory = mem_limit // 80  # 80 GB per A100
+        n_gpus = min(max_by_compute, max_by_memory)
+        if n_gpus < 1:
+            n_gpus = 1
+
+        cfg = {
+            "gpu_count": n_gpus,
+            "pflops": n_gpus * 312e12 / 1e15,
+            "vram_gb": n_gpus * 80,
+            "gpu_cost_usd": 15_000,
+            "h100_equiv": n_gpus * 312 / 990,
+        }
+        model_b = cfg["vram_gb"] / BYTES_PER_PARAM
+
+        print(f"  {mem_limit:>8} GB | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
+              f"{cfg['pflops']:>7.2f} | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f} | ", end="")
+
+        for target in targets:
+            r = find_nodes_for_target(cfg, target)
+            cost = r["cost_usd"]
+            cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+            print(f"{r['n_nodes']:>10,} | {cost_str:>8} | ", end="")
+        print()
+
+    # Also show H100 FP8 under memory limits
+    print(f"\n  H100 SXM (FP8) under memory limits:")
+    print(f"  {'VRAM Limit':>12} | {'Max H100s':>9} | {'Actual VRAM':>11} | {'FP8 PFLOPS':>10} | "
+          f"{'Max Model':>10} | {'H100-eq':>7} | ", end="")
+    for tl in target_labels:
+        print(f"{'N->' + tl:>10} | {'Cost':>8} | ", end="")
+    print()
+    print("  " + "-" * 145)
+
+    for mem_limit in MEMORY_THRESHOLDS_GB:
+        max_by_compute = 16
+        max_by_memory = mem_limit // 80
+        n_gpus = min(max_by_compute, max_by_memory)
+        if n_gpus < 1:
+            n_gpus = 1
+
+        cfg = {
+            "gpu_count": n_gpus,
+            "pflops": n_gpus * 1980e12 / 1e15,
+            "pflops_fp16": n_gpus * 990e12 / 1e15,
+            "vram_gb": n_gpus * 80,
+            "gpu_cost_usd": 30_000,
+            "h100_equiv": n_gpus * 1.0,
+            "bytes_per_param": 14,
+            "bits_per_pseudo_grad": 8,
+        }
+        model_b = cfg["vram_gb"] / cfg["bytes_per_param"]
+
+        print(f"  {mem_limit:>8} GB | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
+              f"{cfg['pflops']:>10.2f} | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f} | ", end="")
+
+        for target in targets:
+            r = find_nodes_for_target(cfg, target)
+            cost = r["cost_usd"]
+            cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+            print(f"{r['n_nodes']:>10,} | {cost_str:>8} | ", end="")
+        print()
+
+
+def print_collateral_damage():
+    """Show which legitimate computing systems would be caught by each threshold."""
+    print("\n" + "=" * 100)
+    print("COLLATERAL DAMAGE: LEGITIMATE SYSTEMS CAUGHT BY EACH THRESHOLD")
+    print("=" * 100)
+
+    compute_thresholds = [16, 8, 4, 2, 1]
+    memory_thresholds = [2048, 1024, 512, 256]
+
+    print(f"\n  {'System':>45} | {'GPUs':>4} | {'VRAM':>7} | {'H100-eq':>7} | ", end="")
+    for ct in compute_thresholds:
+        print(f"{'<'+str(ct):>4} | ", end="")
+    print("| ", end="")
+    for mt in memory_thresholds:
+        print(f"{'<'+str(mt)+'G':>6} | ", end="")
+    print()
+    print("  " + "-" * 140)
+
+    for sys in LEGITIMATE_SYSTEMS:
+        print(f"  {sys['name']:>45} | {sys['gpus']:>4} | {sys['vram_gb']:>5}GB | "
+              f"{sys['h100_equiv']:>7.2f} | ", end="")
+        for ct in compute_thresholds:
+            caught = "X" if sys["h100_equiv"] > ct else "."
+            print(f"  {caught:>2} | ", end="")
+        print("| ", end="")
+        for mt in memory_thresholds:
+            caught = "X" if sys["vram_gb"] > mt else "."
+            print(f"    {caught:>2} | ", end="")
+        print(f"  [{sys['category']}]")
+
+    # Count caught at each threshold
+    print(f"\n  {'Systems caught':>45} |      |         |         | ", end="")
+    for ct in compute_thresholds:
+        count = sum(1 for s in LEGITIMATE_SYSTEMS if s["h100_equiv"] > ct)
+        print(f"{count:>4} | ", end="")
+    print("| ", end="")
+    for mt in memory_thresholds:
+        count = sum(1 for s in LEGITIMATE_SYSTEMS if s["vram_gb"] > mt)
+        print(f"  {count:>4} | ", end="")
+    print()
+
+
 if __name__ == "__main__":
     print("=" * 80)
     print("TREATY EVASION SCENARIO: Maximum Distributed Training Below CCC Threshold")
@@ -908,3 +1254,13 @@ if __name__ == "__main__":
     print(f"\n7. Time scaling check (6mo vs 1.5yr):")
     print(f"   6mo: {r_half['c_local']:.2e}, 1.5yr: {r_full['c_local']:.2e}")
     print(f"   Ratio: {ratio_time:.3f} (expected 0.333): {'PASS' if abs(ratio_time - 1/3) < 0.01 else 'CHECK'}")
+
+    # ── PART 6: Treaty modification analysis ──────────────────────────────────
+
+    print("\n" + "=" * 80)
+    print("PART 6: TREATY MODIFICATION ANALYSIS")
+    print("=" * 80)
+
+    print_countermeasure_ccc_threshold()
+    print_countermeasure_memory_threshold()
+    print_collateral_damage()

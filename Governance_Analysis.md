@@ -395,3 +395,242 @@ The sensitivity analysis reveals three governance-critical findings:
 **3. Hierarchical DiLoCo + compression creates a compounding defense.** With 100x compression and regional clustering, the sync volume drops to ~7 Gbit per direction (for a 91B FP8 model), and the two-tier structure means only group aggregates traverse the WAN. The resulting system achieves $\eta > 0.91$ under *all* tested network conditions, including the worst-case global deployment. An evader using this configuration needs only consumer fiber connections and achieves 95% of the theoretical maximum compute.
 
 **Summary:** The treaty's compute threshold (10^24 FLOP) cannot be enforced through network-level controls. DiLoCo's architecture makes it inherently robust to bandwidth constraints and completely insensitive to latency. The effective enforcement mechanisms remain chip tracking, financial monitoring, and physical detection of GPU concentrations — not network monitoring or bandwidth restrictions.
+
+## 10. Treaty Modifications to Close the Distributed Training Loophole
+
+The preceding sections establish three facts: (1) the CCC threshold is porous — DiLoCo enables sub-CCC nodes to collectively exceed the Strict Threshold with modest investment; (2) network conditions barely matter — even 10 Mbps consumer broadband suffices; (3) the existing enforcement mechanisms (chip tracking, financial monitoring) are the primary barriers, not the compute threshold itself. This section evaluates specific treaty modifications that could narrow or close the distributed training loophole.
+
+### 10.1 Lowering the CCC Compute Threshold
+
+The most direct response is to lower the CCC registration threshold from 16 H100-equivalents. The table below shows the maximum node configuration that fits under each threshold (using A100 80GB, the optimal VRAM/compute hardware):
+
+| CCC Threshold | Max GPUs/node | PFLOPS | VRAM | Max Model | H100-equiv |
+|:--|:--|:--|:--|:--|:--|
+| **16 (current)** | **48x A100** | **14.98** | **3,840 GB** | **240B** | **15.1** |
+| 8 | 25x A100 | 7.80 | 2,000 GB | 125B | 7.9 |
+| 4 | 12x A100 | 3.74 | 960 GB | 60B | 3.8 |
+| 2 | 6x A100 | 1.87 | 480 GB | 30B | 1.9 |
+| 1 | 3x A100 | 0.94 | 240 GB | 15B | 0.9 |
+
+**Nodes and cost to reach each compute target (A100 FP16, 16x compression, 1.5 years):**
+
+| CCC Threshold | Nodes for 10^24 | Cost | Nodes for 10^25 | Cost | Nodes for 10^26 | Cost |
+|:--|:--|:--|:--|:--|:--|:--|
+| 16 (current) | 5 | $4M | 41 | $30M | 404 | $291M |
+| 8 | 8 | $3M | 77 | $29M | 767 | $288M |
+| 4 | 16 | $3M | 157 | $28M | 1,576 | $284M |
+| 2 | 31 | $3M | 310 | $28M | 3,108 | $280M |
+| 1 | 61 | $3M | 610 | $27M | 6,120 | $275M |
+
+**The central finding is that lowering the CCC threshold barely increases the cost of evasion.** Reaching 10^24 FLOP costs approximately $3M regardless of whether the threshold is 16 or 1 H100-equivalent. This is because DiLoCo's efficiency is nearly constant across node counts: $\eta \approx 87\%$ whether using 5 large nodes or 61 small nodes. The evader simply redistributes the same total number of GPUs into more, smaller nodes. The total hardware cost is almost unchanged because the same aggregate compute power is needed.
+
+The impact is on **model quality**, not cost. A 3x A100 node (under 1 H100-eq threshold) can only hold a 15B model, compared to 240B at the current threshold. This forces the evader to either (a) train a much smaller model, or (b) use pipeline parallelism over WAN to shard a larger model across nodes — which incurs severe latency penalties (Section 6.5 estimated ~47 seconds per micro-batch for activation transfers at 100 Mbps). Neither option is attractive, but a 15B model trained on ~3.5T tokens (at 10^24 FLOP) is still a meaningful AI system.
+
+**With H100 FP8 nodes** (exploiting the FP8/FP16 loophole), the evader fares even better:
+
+| CCC Threshold | Max H100s | FP8 PFLOPS | Max Model (FP8) | Nodes for 10^24 | Cost |
+|:--|:--|:--|:--|:--|:--|
+| 16 (current) | 16 | 31.68 | 91B | 2 | $1M |
+| 8 | 8 | 15.84 | 46B | 4 | $1M |
+| 4 | 4 | 7.92 | 23B | 8 | $1M |
+| 2 | 2 | 3.96 | 11B | 15 | $1M |
+| 1 | 1 | 1.98 | 6B | 29 | $1M |
+
+A single H100 running FP8 produces 1.98 PFLOPS of effective compute — nearly 2 H100-equivalents on the CCC's FP16 metric. Even at a 1 H100-eq threshold, the evader can use individual H100s as single-GPU nodes and reach 10^24 with 29 cards ($870K). The cost is $1M or less at every threshold level.
+
+**Collateral damage of lowering the threshold:**
+
+| Threshold | Legitimate systems requiring registration |
+|:--|:--|
+| 16 (current) | 0 of 14 representative systems |
+| 8 | 0 (the 8x H100 systems are exactly at 8.0, not over) |
+| 4 | 4 systems: AWS p5.48xlarge, DGX H100, Princeton AI cluster, molecular dynamics clusters |
+| 2 | 7 systems: adds DGX A100, AI lab servers, AWS p4d |
+| 1 | 11 of 14 systems: includes nearly all multi-GPU research workstations |
+
+At a threshold of 4 H100-equiv, every 8x H100 node in every university, cloud provider, and research lab worldwide would require registration. AWS's p5.48xlarge instances and DGX H100 systems — standard equipment in hundreds of institutions — would become CCCs subject to monitoring and usage restrictions. At a threshold of 1, even a researcher with three A100s would need to register. This would impose an enormous bureaucratic burden on legitimate AI research, scientific computing, and commercial inference deployments, while barely increasing the cost of evasion.
+
+**Assessment:** Lowering the CCC compute threshold is **largely ineffective** as a countermeasure against distributed training. It imposes escalating regulatory burden on legitimate users while reducing evasion cost by less than 5%. The threshold redistribution property of DiLoCo — where total cost is determined by aggregate GPUs, not per-node size — renders this approach fundamentally flawed.
+
+### 10.2 Adding Memory to the CCC Definition
+
+The current CCC threshold is defined solely by compute capacity (TFLOPS FP16). Section 6.5 identified the resulting exploit: an evader can select hardware that maximizes VRAM while staying under the compute threshold (48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv), enabling large models (240B) that would be impossible on compute-equivalent H100 nodes (1,280 GB VRAM).
+
+A **memory-based registration threshold** would require CCC registration when aggregate accelerator VRAM exceeds a specified limit, regardless of compute capacity.
+
+**Impact of VRAM thresholds (combined with 16 H100-eq compute threshold):**
+
+| VRAM Limit | Max A100s | VRAM | Max Model | Nodes for 10^24 | Cost | Nodes for 10^25 | Cost |
+|:--|:--|:--|:--|:--|:--|:--|:--|
+| No limit (current) | 48 | 3,840 GB | 240B | 5 | $4M | 41 | $30M |
+| 2 TB | 25 | 2,000 GB | 125B | 8 | $3M | 77 | $29M |
+| 1 TB | 12 | 960 GB | 60B | 16 | $3M | 157 | $28M |
+| 512 GB | 6 | 480 GB | 30B | 31 | $3M | 310 | $28M |
+| 256 GB | 3 | 240 GB | 15B | 61 | $3M | 610 | $27M |
+
+The pattern is identical to lowering the compute threshold: costs barely change, but model size shrinks. A 256 GB VRAM limit forces the evader to 3x A100 nodes (15B model), but reaching 10^24 still costs only $3M.
+
+The memory threshold does **close the specific A100 exploit** — preventing an evader from packing 48x A100 80GB into a single unregistered node. But it does not prevent evasion because the evader simply uses more, smaller nodes with the same total GPU count.
+
+**Collateral damage of memory thresholds:**
+
+| VRAM Limit | Legitimate systems requiring registration |
+|:--|:--|
+| 2 TB | 0 of 14 representative systems |
+| 1 TB | 0 |
+| 512 GB | 6 systems: all 8x A100/H100 nodes (DGX A100, DGX H100, AI lab servers, AWS p4d/p5, molecular dynamics, Princeton) |
+| 256 GB | 10 systems: adds 4x A100 80GB workstations, 8x L40S inference servers |
+
+A 512 GB VRAM limit would require registration of **every DGX system, every 8-GPU cloud instance, and every 8-GPU research server** — precisely the hardware that forms the backbone of legitimate AI research worldwide. This would effectively mandate that universities, cloud providers, and research labs register their standard compute infrastructure.
+
+A 2 TB or 1 TB limit would avoid catching standard systems while still constraining the A100 exploit. However, at 1 TB the evader can still use 12x A100 (960 GB, 60B model) — a substantial model by any standard. And an H100 FP8 evader is not constrained at all by memory limits above 1.28 TB, since 16x H100 has only 1,280 GB VRAM.
+
+**Assessment:** A memory threshold of **1-2 TB** is a reasonable, low-collateral addition that closes the specific 48x A100 exploit without burdening standard 8-GPU systems. However, it does not fundamentally prevent distributed training evasion — it merely reduces the maximum model size per node from 240B to 60-125B. The evader compensates with more nodes at nearly the same total cost.
+
+### 10.3 Bandwidth Restrictions
+
+Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the treaty mandate bandwidth restrictions on sub-CCC nodes?
+
+**Scenario: 10 Mbps upload cap on all unregistered nodes.**
+
+From Section 9.2, the impact at 10 Mbps (worst tested):
+
+| Configuration | C_local at 100 Mbps | C_local at 10 Mbps | Reduction |
+|:--|:--|:--|:--|
+| 72 nodes, A100 FP16, flat 16x | 1.79 x 10^25 | 1.68 x 10^25 | 6% |
+| 2,000 nodes, H100 FP8, flat 16x | 1.03 x 10^27 | 9.66 x 10^26 | 6% |
+| 2,000 nodes, H100 FP8, hier+100x | 1.13 x 10^27 | 1.10 x 10^27 | 3% |
+
+A 10 Mbps cap — equivalent to crippling internet infrastructure to the level of 2005-era DSL — reduces evasion capability by only 3-6%. DiLoCo compensates by increasing H from ~200 to ~2,000 inner steps, which reduces $\eta$ from 0.875 to 0.821. The logarithmic dependence on H makes this inherently resilient: the evader needs 10x more inner steps but loses only one $\log_{10}$ unit of efficiency.
+
+**Collateral damage:** A 10 Mbps upload cap on GPU-equipped facilities would devastate legitimate cloud computing, remote inference, federated learning, scientific data transfer, and the modern internet economy. The treaty signatories' own legitimate AI infrastructure would be severely impaired. No realistic bandwidth restriction is both enforceable and effective.
+
+**Assessment: Bandwidth restrictions are ineffective and disproportionately harmful.** The 3-6% reduction in evasion capability does not justify the massive collateral damage to internet infrastructure.
+
+### 10.4 Traffic Fingerprinting and ISP Monitoring
+
+DiLoCo creates a distinctive network signature: pseudo-gradient synchronization at regular intervals (every ~50-200 minutes), with identical payload sizes (compressed model-sized tensors). Could treaty-mandated ISP monitoring detect this pattern?
+
+**The sync fingerprint:** At 100 Mbps with a 240B model and 16x compression, each sync transfers ~30 GB (240 Gbit) per direction. With streaming DiLoCo, this traffic is spread over the full outer step (~100 minutes), producing a sustained ~38 Mbps average in each direction. The traffic pattern is:
+- **Continuous:** Streaming DiLoCo eliminates the bursty pattern that non-streaming DiLoCo would produce
+- **Bidirectional:** ~76 Mbps total, comparable to a media server or cloud backup service
+- **Encrypted:** VPN tunnels obscure content; only flow metadata (size, timing, destination) is visible
+- **Regular cadence:** Sync intervals are highly periodic (e.g., every 100 minutes ± straggler variance)
+
+**Detection feasibility:** The regular cadence and fixed payload size are the most distinctive features. A traffic classifier at the ISP level could look for long-running, encrypted, bidirectional flows of approximately constant bandwidth with periodic structure. However:
+
+1. **Streaming eliminates bursts.** Non-streaming DiLoCo would create obvious ~30 GB bursts every 100 minutes. Streaming spreads this into continuous transfer, making it resemble ordinary sustained traffic (video streaming, cloud sync, CDN nodes).
+2. **Traffic shaping defeats detection.** The evader can inject random jitter into sync timing (varying H by a few steps), pad payloads to variable sizes, and multiplex training traffic with cover traffic (video streaming, torrents) to obscure the pattern.
+3. **Scale of monitoring required.** The treaty would need global ISP cooperation to monitor all encrypted flows from every server with GPUs. This is a mass surveillance program of unprecedented scope.
+4. **False positive rate.** Sustained bidirectional encrypted traffic at 50-100 Mbps describes millions of legitimate servers worldwide (game servers, CDN edges, VPN endpoints, corporate backup systems). Even a 0.1% false positive rate would generate millions of spurious alerts.
+5. **Mesh detection is harder than point detection.** Identifying that N geographically distributed servers are participating in the same training run requires correlating flow metadata across N^2 pairwise connections (or N connections to a parameter server), across multiple ISPs and jurisdictions.
+
+**Assessment:** Traffic fingerprinting is a theoretically interesting detection vector, but **practically infeasible** against a sophisticated evader using streaming DiLoCo with traffic shaping. It requires global ISP cooperation, creates massive privacy concerns, and can be defeated by elementary countermeasures. It may have value as one signal among many in a multi-source intelligence approach, but it cannot serve as a primary enforcement mechanism.
+
+### 10.5 Hardware-Level Enforcement: TEE and Remote Attestation
+
+Modern AI accelerators (NVIDIA H100, H200, Blackwell) include **Trusted Execution Environment (TEE)** capabilities through NVIDIA Confidential Computing. This technology could be repurposed for treaty enforcement:
+
+**Concept:** Every AI chip is required to cryptographically attest its workload to an international monitoring body (the CTB — Compute Treaty Body). The TEE ensures that the attestation is tamper-resistant:
+- The chip's firmware reports the kernels being executed, the model architecture, and cumulative FLOP counts
+- This attestation is signed by a hardware-embedded key that cannot be extracted or modified without destroying the chip
+- The CTB can verify that a chip is running only approved workloads (per the treaty's AI Technique Whitelist, Article II.20)
+- If a violation is detected, the chip's attestation keys can be revoked, rendering it unable to participate in monitored workloads
+
+**Strengths:**
+- **Eliminates plausible deniability:** A chip running DiLoCo training would be detected by its own hardware, regardless of network obfuscation
+- **Scales with chip tracking:** Combined with the treaty's chip registration system, every registered chip becomes a monitor that cannot be deceived by its operator
+- **Per-chip enforcement:** Does not require network monitoring, ISP cooperation, or physical inspections
+
+**Limitations:**
+1. **Manufacturer cooperation required.** Currently only NVIDIA supports confidential computing on AI accelerators. AMD, Intel, and other manufacturers would need to implement equivalent capabilities. Custom ASICs (Google TPU, Amazon Trainium) would need similar mechanisms.
+2. **Firmware integrity.** The security of TEE-based attestation depends on firmware that cannot be modified. Sophisticated actors may be able to extract keys, reflash firmware, or exploit hardware vulnerabilities. The arms race between attestation security and hardware hacking is ongoing, and state-level actors with access to semiconductor analysis tools (FIB, delayering) may be able to defeat current protections.
+3. **Pre-existing and unregistered chips.** Chips manufactured before treaty ratification, or manufactured outside the treaty's jurisdiction (e.g., domestic Chinese fabs using SMIC process), would not have the required attestation firmware. The treaty's chip tracking provisions partially address this, but a state actor with pre-existing stockpiles or domestic manufacturing could acquire unattested chips.
+4. **Privacy and sovereignty concerns.** Requiring every AI chip to report its workload to an international body raises significant privacy, intellectual property, and national sovereignty objections. Legitimate users may object to having their proprietary research monitored in real-time.
+5. **Verification of the TEE itself.** Who verifies that the TEE firmware is correct and has not been backdoored? This creates a chain-of-trust problem that ultimately depends on hardware manufacturers and the CTB acting in good faith.
+
+**Assessment:** TEE-based remote attestation is the **most technically promising** countermeasure for non-state actors. If all major chip manufacturers implement treaty-compliant attestation firmware, and the chip tracking system ensures that only attested chips are in circulation, the plausible deniability problem is effectively eliminated. However, it requires significant industry cooperation, does not address state actors with domestic chip manufacturing, and raises substantial privacy and sovereignty concerns. It should be considered a **medium-term** enforcement mechanism (3-5 years to deploy) rather than an immediate solution.
+
+### 10.6 Orchestration Layer Regulation
+
+The treaty could ban the development, distribution, or use of software specifically designed for WAN-based distributed training (DiLoCo, streaming DiLoCo, hierarchical DiLoCo, etc.). Article VIII already restricts research that "advances toward ASI" or "endangers agreement verifiability."
+
+**Problems:**
+1. **The knowledge is published.** DiLoCo was published by Douillard et al. (2023) at Google DeepMind. Streaming DiLoCo, hierarchical DiLoCo, and related techniques are in the open literature. Banning the software cannot unpublish the papers.
+2. **Implementation is trivial.** DiLoCo is a simple modification to distributed SGD: run H local steps, then average pseudo-gradients. A competent engineer can implement it from the paper in a few days. No specialized software framework is required — it can be implemented in a few hundred lines of PyTorch.
+3. **Dual-use problem.** The same techniques (federated learning, local SGD, gradient compression) are used extensively in privacy-preserving machine learning, mobile device training, and scientific simulation. Banning WAN-optimized training software would cripple legitimate federated learning research and deployment.
+4. **Precedent: encryption export controls.** The 1990s attempt to regulate encryption software (treating strong encryption as a munition under ITAR/EAR) is widely regarded as a policy failure. The software was too simple, too broadly useful, and too easily reimplemented to be effectively controlled. DiLoCo is even simpler than modern encryption.
+
+**Assessment: Orchestration layer regulation is unenforceable and counterproductive.** It would chill legitimate distributed computing research while being trivially circumvented by any evader willing to write a few hundred lines of code.
+
+### 10.7 Redefining Model Possession
+
+In distributed DiLoCo training, each node holds a complete copy of the model weights (unlike pipeline parallelism, where weights are sharded). However, the model is never "possessed" in the traditional sense by any single entity if the nodes are operated by different actors or across jurisdictions. The treaty could redefine model possession to include:
+
+- **Distributed possession:** Holding any replica of a model that is part of an ongoing distributed training run
+- **Control of orchestration:** Operating the coordination infrastructure (parameter server, communication protocol) for a distributed training run, regardless of whether one "possesses" the model weights
+
+This is primarily a **legal** rather than technical modification. It addresses the scenario where an evader claims that no individual node operator violated the treaty because no individual node exceeded the CCC threshold.
+
+**Assessment:** This is a **necessary but insufficient** legal clarification. It closes a definitional gap in the treaty but does nothing to solve the detection problem — you still need to discover the distributed training run before the possession question becomes relevant.
+
+### 10.8 Enhanced Chip Tracking and Physical Inspections
+
+The treaty already includes chip tracking and inspection provisions (Articles V, VII, X). These could be strengthened:
+
+**a) Mandatory utilization reporting.** All registered AI chips (even sub-CCC) could be required to report utilization metrics (GPU hours, average utilization, power draw) to the CTB at regular intervals. DiLoCo training produces a distinctive utilization pattern: 100% GPU utilization during compute blocks, with periodic brief pauses during synchronization (in non-streaming mode) or ~38 Mbps sustained network I/O (in streaming mode). Anomalous utilization (24/7 high GPU utilization on a sub-CCC node for months) would trigger investigation.
+
+**b) Random physical inspections.** The treaty could authorize unannounced inspections of any facility known to contain AI chips, not just registered CCCs. Inspectors could examine running processes, network connections, and training logs.
+
+**c) Enhanced whistleblower programs.** Section 6.7 noted that operational security over 1.5 years across dozens of sites is difficult. Financial incentives for reporting (e.g., bounties proportional to the scale of the detected violation) could significantly increase the probability of detection through human intelligence rather than technical monitoring.
+
+**d) Power monitoring.** A 48x A100 node consumes approximately 15-20 kW at full utilization. Operating 72 such nodes for 1.5 years consumes ~14-19 GWh of electricity — comparable to a small industrial facility. Power utilities could be required to report sustained high-power draws from facilities known to contain AI hardware. However, 15-20 kW per site is well within the range of normal commercial and residential power consumption, making this ineffective for individual sub-CCC nodes.
+
+**Assessment:** Enhanced chip tracking and inspections are **moderately effective** and represent the lowest-collateral-damage enforcement approach. Mandatory utilization reporting combined with enhanced whistleblower programs directly increases the cost and risk of prolonged distributed training. The main limitation is that they are reactive rather than preventive, and their effectiveness depends on implementation quality and political will.
+
+### 10.9 Synthesis: Recommended Treaty Modifications
+
+No single countermeasure closes the distributed training loophole. The analysis reveals that effectiveness depends critically on the **actor type**:
+
+**Against non-state actors ($3M-$360M, 4-500 nodes):**
+
+| Countermeasure | Effectiveness | Collateral | Recommendation |
+|:--|:--|:--|:--|
+| Lower CCC threshold | Low | High | **Not recommended** |
+| Memory threshold (1-2 TB) | Low-Medium | Low | **Recommended** — closes A100 exploit |
+| Bandwidth restrictions | None | Very high | **Not recommended** |
+| Traffic fingerprinting | Low | High | Not recommended as primary mechanism |
+| TEE/Remote attestation | **High** | Medium | **Strongly recommended** (medium-term) |
+| Orchestration regulation | None | Medium | Not recommended |
+| Model possession redefinition | Medium | None | **Recommended** — legal clarification |
+| Enhanced chip tracking | **Medium-High** | Low | **Strongly recommended** |
+| Whistleblower programs | **Medium-High** | None | **Strongly recommended** |
+
+**Against state actors ($1B+, 2,000+ nodes):**
+
+| Countermeasure | Effectiveness | Notes |
+|:--|:--|:--|
+| Lower CCC threshold | None | Same cost, more nodes |
+| Memory threshold | None | Same cost, more nodes |
+| TEE/Remote attestation | Low | State actors can manufacture unattested chips |
+| Enhanced chip tracking | Low | Classified procurement, domestic fabs |
+| Financial monitoring | **Medium** | Detectable above ~$1B for most states |
+| Diplomatic/intelligence | **Medium-High** | The only effective lever at state scale |
+
+**Recommended package of treaty modifications:**
+
+1. **Add a 1 TB VRAM threshold to the CCC definition** (in addition to the compute threshold). This closes the specific 48x A100 exploit at minimal collateral cost — no standard 8-GPU system exceeds 1 TB VRAM. The evader is forced to 12x A100 nodes (60B model) or H100 nodes (91B), reducing model quality without substantially increasing cost.
+
+2. **Mandate TEE-based workload attestation** on all AI accelerators manufactured after treaty ratification. This is the single most impactful technical countermeasure for non-state actors, as it eliminates plausible deniability at the hardware level. Requires cooperation from NVIDIA, AMD, Intel, and other manufacturers.
+
+3. **Redefine model possession** to include distributed possession and control of orchestration. This is a no-cost legal clarification that closes a definitional gap.
+
+4. **Strengthen whistleblower programs** with financial bounties proportional to detected violation scale. Given the operational security challenges of sustained distributed training (Section 6.7), human intelligence is likely more effective than technical monitoring.
+
+5. **Require utilization reporting** for all registered AI chips, with anomaly detection for sustained high-utilization patterns consistent with training (as opposed to inference or scientific computing, which have different utilization profiles).
+
+6. **Do not lower the CCC compute threshold.** The analysis demonstrates this is largely ineffective while creating massive regulatory burden for legitimate users.
+
+7. **Do not impose bandwidth restrictions.** DiLoCo's bandwidth insensitivity (Section 9) makes this futile, and the collateral damage to internet infrastructure is unacceptable.
+
+**The hard truth:** Even with all recommended modifications, the distributed training loophole cannot be fully closed against a determined state actor. A nation-state with domestic chip manufacturing (unattested chips), classified procurement (invisible to financial monitoring), and sovereign territory (immune to inspections) can operate a distributed training run that is fundamentally undetectable by technical means. Against such an actor, the treaty's enforcement ultimately depends on diplomatic, intelligence, and economic instruments — the same tools used in nuclear nonproliferation, with the same fundamental limitations.

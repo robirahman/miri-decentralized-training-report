@@ -140,3 +140,59 @@ Tests whether degraded network conditions (lower bandwidth, higher latency) sign
 *   **10^26 is achievable under all network conditions** (500 nodes, 48x A100, even at 10 Mbps/340 ms).
 *   **10^27 requires hierarchical+100x at very low bandwidths** (flat DiLoCo falls short below ~50 Mbps), but with Config F it is achievable even at 10 Mbps globally.
 *   **Network-level enforcement is ineffective.** An evader using consumer broadband loses at most 12% of compute versus an optimized local deployment. The treaty cannot rely on network monitoring or bandwidth restrictions to prevent distributed training.
+
+---
+
+## Scenario 5: Treaty Modification Analysis — Countermeasure Effectiveness
+
+Evaluates proposed treaty modifications to close the distributed training loophole. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 10.
+
+### Lowering the CCC Compute Threshold
+
+For each candidate threshold, shows the maximum sub-threshold node (A100 80GB) and nodes/cost to reach 10^24 FLOP:
+
+| CCC Threshold | Max GPUs/node | VRAM | Max Model | Nodes for 10^24 | Cost |
+|:--|:--|:--|:--|:--|:--|
+| 16 (current) | 48 | 3,840 GB | 240B | 5 | $4M |
+| 8 | 25 | 2,000 GB | 125B | 8 | $3M |
+| 4 | 12 | 960 GB | 60B | 16 | $3M |
+| 2 | 6 | 480 GB | 30B | 31 | $3M |
+| 1 | 3 | 240 GB | 15B | 61 | $3M |
+
+*   **Cost is nearly constant (~$3M) regardless of threshold.** DiLoCo redistributes the same total GPUs into more, smaller nodes.
+*   **Model quality degrades significantly:** 240B at current threshold vs 15B at threshold=1.
+*   **Collateral damage escalates:** 0 legitimate systems caught at 16; 4 at threshold 4; 11 at threshold 1.
+
+### Memory Threshold Analysis
+
+| VRAM Limit | Max A100s | Max Model | Nodes for 10^24 | Cost |
+|:--|:--|:--|:--|:--|
+| No limit | 48 | 240B | 5 | $4M |
+| 2 TB | 25 | 125B | 8 | $3M |
+| 1 TB | 12 | 60B | 16 | $3M |
+| 512 GB | 6 | 30B | 31 | $3M |
+
+*   Same pattern as compute threshold: cost unchanged, model size constrained.
+*   512 GB limit catches 6 of 14 representative legitimate systems (all DGX, 8-GPU cloud instances).
+*   1 TB limit catches 0 legitimate systems while still constraining the 48x A100 exploit.
+
+### Countermeasure Effectiveness Summary
+
+| Countermeasure | vs Non-State | vs State | Collateral | Recommended? |
+|:--|:--|:--|:--|:--|
+| Lower CCC threshold | Low | None | High | No |
+| Memory threshold (1 TB) | Low-Med | None | Low | **Yes** |
+| Bandwidth restrictions | None | None | Very high | No |
+| Traffic fingerprinting | Low | Low | High | No |
+| TEE/Remote attestation | **High** | Low | Medium | **Yes** (medium-term) |
+| Orchestration regulation | None | None | Medium | No |
+| Model possession redefinition | Medium | Low | None | **Yes** |
+| Enhanced chip tracking | **Med-High** | Low | Low | **Yes** |
+| Whistleblower programs | **Med-High** | Low | None | **Yes** |
+
+### Conclusions
+
+*   **No single modification closes the loophole.** The fundamental challenge is that DiLoCo's cost depends on total GPUs, not per-node size, so threshold-based countermeasures are ineffective.
+*   **Against non-state actors:** TEE-based attestation + enhanced chip tracking + whistleblower programs is the most effective combination.
+*   **Against state actors:** Only diplomatic, intelligence, and financial instruments are effective. Technical countermeasures are insufficient against actors with domestic chip manufacturing and classified procurement.
+*   **Recommended package:** 1 TB VRAM threshold, TEE attestation mandate, model possession redefinition, enhanced whistleblower bounties, utilization reporting.
