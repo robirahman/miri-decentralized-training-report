@@ -1,0 +1,693 @@
+================================================================================
+TREATY EVASION SCENARIO: Maximum Distributed Training Below CCC Threshold
+Time limit: 1.5 years (548 days)
+WAN: 100 Mbps, 100 ms latency
+MFU: 40%  |  Compression: 16x  |  Streaming: Yes
+Compression quality scenario: expected
+CCC threshold: 16 H100-equivalents = 15,840 TFLOPS FP16
+================================================================================
+
+================================================================================
+Configuration: 48x A100 80GB
+  Peak FP16:    14.98 PFLOPS (15.1 H100-equiv)
+  VRAM:         3,840 GB
+  Max model:    240B params (FP16 training)
+  GPU cost:     $15,000/GPU x 48 = $720,000/node
+================================================================================
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24 |  Model |  Tokens | OT ratio | eta_chin |  C_quality
+---------------------------------------------------------------------------------------------------------------------------------------
+    1 |      48 |    $0.7M | 1.000 |     1 | 1.000 |   2.84e+23 |    0.3x |   240B |    0.2T |     0.0x |    1.000 |   2.84e+23
+    2 |      96 |    $1.4M | 1.050 |   160 | 0.863 |   4.89e+23 |    0.5x |   240B |    0.4T |     0.1x |    0.606 |   2.97e+23
+    4 |     192 |    $2.9M | 1.100 |   168 | 0.862 |   9.77e+23 |    1.0x |   240B |    0.8T |     0.1x |    0.781 |   7.64e+23
+    8 |     384 |    $5.8M | 1.150 |   176 | 0.861 |   1.95e+24 |    2.0x |   240B |    1.6T |     0.3x |    0.926 |   1.81e+24
+   16 |     768 |   $11.5M | 1.200 |   183 | 0.860 |   3.90e+24 |    3.9x |   240B |    3.2T |     0.5x |    1.000 |   3.90e+24
+   32 |   1,536 |   $23.0M | 1.250 |   191 | 0.859 |   7.79e+24 |    7.8x |   240B |    6.3T |     1.0x |    0.998 |   7.78e+24
+   72 |   3,456 |   $51.8M | 1.308 |   200 | 0.858 |   1.75e+25 |   17.5x |   240B |   14.2T |     2.3x |    0.884 |   1.55e+25
+  144 |   6,912 |  $103.7M | 1.358 |   207 | 0.857 |   3.50e+25 |   35.0x |   240B |   28.4T |     4.6x |    0.726 |   2.54e+25
+  500 |  24,000 |  $360.0M | 1.448 |   221 | 0.855 |   1.21e+26 |  121.2x |   240B |   98.5T |    16.0x |    0.421 |   5.11e+25
+ 1000 |  48,000 |  $720.0M | 1.498 |   229 | 0.854 |   2.42e+26 |  242.2x |   240B |  196.9T |    32.1x |    0.284 |   6.87e+25
+
+--- Detailed: 48x A100 80GB, N=4 ---
+  Per-step compute:    31.51 seconds
+  Sync base time:     4800.1 seconds
+  Straggler factor:   1.100
+  Sync time (total):  5280.1 seconds
+  Min inner steps H:  168
+  Alpha:              0.05420
+  Efficiency eta:       0.8617
+  C_actual:           1.134e+24 FLOP
+  C_local:            9.774e+23 FLOP (local-equivalent)
+  x Strict Threshold: 1.0x
+  Model:              240B params
+  Tokens:             0.8T
+  Chinchilla tokens:  6.1T
+  Overtraining:       0.1x
+  Cost:               $2,880,000
+
+--- Detailed: 48x A100 80GB, N=72 ---
+  Per-step compute:    31.51 seconds
+  Sync base time:     4800.1 seconds
+  Straggler factor:   1.308
+  Sync time (total):  6280.9 seconds
+  Min inner steps H:  200
+  Alpha:              0.05420
+  Efficiency eta:       0.8575
+  C_actual:           2.042e+25 FLOP
+  C_local:            1.751e+25 FLOP (local-equivalent)
+  x Strict Threshold: 17.5x
+  Model:              240B params
+  Tokens:             14.2T
+  Chinchilla tokens:  6.1T
+  Overtraining:       2.3x
+  Cost:               $51,840,000
+
+================================================================================
+Configuration: 16x GH200
+  Peak FP16:    15.84 PFLOPS (16.0 H100-equiv)
+  VRAM:         2,304 GB
+  Max model:    144B params (FP16 training)
+  GPU cost:     $30,000/GPU x 16 = $480,000/node
+================================================================================
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24 |  Model |  Tokens | OT ratio | eta_chin |  C_quality
+---------------------------------------------------------------------------------------------------------------------------------------
+    1 |      16 |    $0.5M | 1.000 |     1 | 1.000 |   3.00e+23 |    0.3x |   144B |    0.3T |     0.1x |    1.000 |   3.00e+23
+    2 |      32 |    $1.0M | 1.050 |   170 | 0.858 |   5.15e+23 |    0.5x |   144B |    0.7T |     0.2x |    0.861 |   4.43e+23
+    4 |      64 |    $1.9M | 1.100 |   178 | 0.857 |   1.03e+24 |    1.0x |   144B |    1.4T |     0.4x |    0.976 |   1.00e+24
+    8 |     128 |    $3.8M | 1.150 |   186 | 0.856 |   2.05e+24 |    2.1x |   144B |    2.8T |     0.8x |    1.000 |   2.05e+24
+   16 |     256 |    $7.7M | 1.200 |   194 | 0.854 |   4.10e+24 |    4.1x |   144B |    5.6T |     1.5x |    0.958 |   3.93e+24
+   32 |     512 |   $15.4M | 1.250 |   202 | 0.853 |   8.19e+24 |    8.2x |   144B |   11.1T |     3.0x |    0.831 |   6.81e+24
+   72 |   1,152 |   $34.6M | 1.308 |   211 | 0.852 |   1.84e+25 |   18.4x |   144B |   25.0T |     6.8x |    0.634 |   1.17e+25
+  144 |   2,304 |   $69.1M | 1.358 |   219 | 0.851 |   3.68e+25 |   36.8x |   144B |   50.0T |    13.6x |    0.464 |   1.71e+25
+  500 |   8,000 |  $240.0M | 1.448 |   234 | 0.850 |   1.27e+26 |  127.4x |   144B |  173.6T |    47.1x |    0.225 |   2.87e+25
+ 1000 |  16,000 |  $480.0M | 1.498 |   242 | 0.849 |   2.55e+26 |  254.6x |   144B |  347.1T |    94.2x |    0.140 |   3.56e+25
+
+--- Detailed: 16x GH200, N=72 ---
+  Per-step compute:    17.87 seconds
+  Sync base time:     2880.1 seconds
+  Straggler factor:   1.308
+  Sync time (total):  3768.6 seconds
+  Min inner steps H:  211
+  Alpha:              0.05588
+  Efficiency eta:       0.8523
+  C_actual:           2.159e+25 FLOP
+  C_local:            1.840e+25 FLOP (local-equivalent)
+  x Strict Threshold: 18.4x
+  Model:              144B params
+  Tokens:             25.0T
+  Chinchilla tokens:  3.7T
+  Overtraining:       6.8x
+  Cost:               $34,560,000
+
+================================================================================
+Configuration: 16x H100 SXM
+  Peak FP16:    15.84 PFLOPS (16.0 H100-equiv)
+  VRAM:         1,280 GB
+  Max model:    80B params (FP16 training)
+  GPU cost:     $30,000/GPU x 16 = $480,000/node
+================================================================================
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24 |  Model |  Tokens | OT ratio | eta_chin |  C_quality
+---------------------------------------------------------------------------------------------------------------------------------------
+    1 |      16 |    $0.5M | 1.000 |     1 | 1.000 |   3.00e+23 |    0.3x |    80B |    0.6T |     0.3x |    1.000 |   3.00e+23
+    2 |      32 |    $1.0M | 1.050 |   170 | 0.853 |   5.12e+23 |    0.5x |    80B |    1.2T |     0.6x |    1.000 |   5.12e+23
+    4 |      64 |    $1.9M | 1.100 |   178 | 0.852 |   1.02e+24 |    1.0x |    80B |    2.5T |     1.2x |    0.984 |   1.01e+24
+    8 |     128 |    $3.8M | 1.150 |   186 | 0.851 |   2.04e+24 |    2.0x |    80B |    5.0T |     2.4x |    0.880 |   1.80e+24
+   16 |     256 |    $7.7M | 1.200 |   194 | 0.850 |   4.08e+24 |    4.1x |    80B |   10.0T |     4.9x |    0.723 |   2.95e+24
+   32 |     512 |   $15.4M | 1.250 |   202 | 0.848 |   8.14e+24 |    8.1x |    80B |   20.0T |     9.8x |    0.549 |   4.47e+24
+   72 |   1,152 |   $34.6M | 1.308 |   211 | 0.847 |   1.83e+25 |   18.3x |    80B |   45.0T |    22.0x |    0.364 |   6.66e+24
+  144 |   2,304 |   $69.1M | 1.358 |   219 | 0.846 |   3.65e+25 |   36.5x |    80B |   90.0T |    43.9x |    0.240 |   8.76e+24
+  500 |   8,000 |  $240.0M | 1.448 |   234 | 0.844 |   1.27e+26 |  126.6x |    80B |  312.4T |   152.5x |    0.100 |   1.26e+25
+ 1000 |  16,000 |  $480.0M | 1.498 |   242 | 0.843 |   2.53e+26 |  252.9x |    80B |  624.8T |   305.1x |    0.058 |   1.47e+25
+
+================================================================================
+PART 2: SCALING TO 10^27 FLOP
+================================================================================
+
+--- A: Flat DiLoCo, 48x A100 FP16, 16x compression ---
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |  24,000 |    $360M | 1.448 |   221 | 0.855 |   1.21e+26 |    121x
+ 1000 |  48,000 |    $720M | 1.498 |   229 | 0.854 |   2.42e+26 |    242x
+ 2000 |  96,000 |    $1.4B | 1.548 |   236 | 0.853 |   4.84e+26 |    484x
+ 3000 | 144,000 |    $2.2B | 1.578 |   241 | 0.853 |   7.26e+26 |    726x
+ 4000 | 192,000 |    $2.9B | 1.598 |   244 | 0.853 |   9.67e+26 |    967x
+ 5000 | 240,000 |    $3.6B | 1.614 |   246 | 0.852 |   1.21e+27 |   1209x
+
+--- B: Hierarchical DiLoCo (groups of 8), 48x A100 FP16, 16x ---
+
+    N | Groups |  H_in | H_reg | H_eff |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |     62 |    18 |    11 |    60 | 0.885 |   1.26e+26 |    126x
+ 1000 |    125 |    18 |    12 |    62 | 0.884 |   2.51e+26 |    251x
+ 2000 |    250 |    18 |    12 |    62 | 0.884 |   5.01e+26 |    501x
+ 3000 |    375 |    18 |    13 |    65 | 0.883 |   7.51e+26 |    751x
+ 4000 |    500 |    18 |    13 |    65 | 0.883 |   1.00e+27 |   1002x
+ 5000 |    625 |    18 |    13 |    65 | 0.883 |   1.25e+27 |   1252x
+
+--- C: Flat DiLoCo, 16x H100 FP8, 16x compression ---
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |   8,000 |    $240M | 1.448 |   234 | 0.846 |   2.54e+26 |    254x
+ 1000 |  16,000 |    $480M | 1.498 |   242 | 0.845 |   5.07e+26 |    507x
+ 2000 |  32,000 |    $960M | 1.548 |   250 | 0.844 |   1.01e+27 |   1012x
+ 3000 |  48,000 |    $1.4B | 1.578 |   255 | 0.843 |   1.52e+27 |   1517x
+ 4000 |  64,000 |    $1.9B | 1.598 |   258 | 0.843 |   2.02e+27 |   2022x
+ 5000 |  80,000 |    $2.4B | 1.614 |   261 | 0.843 |   2.53e+27 |   2527x
+
+--- D: Hierarchical DiLoCo, 16x H100 FP8, 16x compression ---
+
+    N | Groups |  H_in | H_reg | H_eff |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |     62 |    19 |    12 |    66 | 0.877 |   2.63e+26 |    263x
+ 1000 |    125 |    19 |    12 |    66 | 0.876 |   5.26e+26 |    526x
+ 2000 |    250 |    19 |    12 |    66 | 0.876 |   1.05e+27 |   1051x
+ 3000 |    375 |    19 |    13 |    69 | 0.875 |   1.58e+27 |   1575x
+ 4000 |    500 |    19 |    13 |    69 | 0.875 |   2.10e+27 |   2100x
+ 5000 |    625 |    19 |    13 |    69 | 0.875 |   2.62e+27 |   2625x
+
+--- E: Flat DiLoCo, 48x A100 FP16, 100x compression ---
+
+    N |    GPUs |     Cost |  f(N) | H_min |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |  24,000 |    $360M | 1.448 |    36 | 0.869 |   1.23e+26 |    123x
+ 1000 |  48,000 |    $720M | 1.498 |    37 | 0.869 |   2.46e+26 |    246x
+ 2000 |  96,000 |    $1.4B | 1.548 |    38 | 0.868 |   4.92e+26 |    492x
+ 3000 | 144,000 |    $2.2B | 1.578 |    39 | 0.868 |   7.38e+26 |    738x
+ 4000 | 192,000 |    $2.9B | 1.598 |    39 | 0.868 |   9.84e+26 |    984x
+ 5000 | 240,000 |    $3.6B | 1.614 |    40 | 0.867 |   1.23e+27 |   1229x
+
+--- F: Hierarchical + 100x compression, 16x H100 FP8 ---
+
+    N | Groups |  H_in | H_reg | H_eff |   eta |    C_local |  x10^24
+---------------------------------------------------------------------------
+  500 |     62 |     3 |    12 |    10 | 0.893 |   2.68e+26 |    268x
+ 1000 |    125 |     3 |    12 |    10 | 0.893 |   5.36e+26 |    536x
+ 2000 |    250 |     3 |    13 |    11 | 0.892 |   1.07e+27 |   1070x
+ 3000 |    375 |     3 |    13 |    11 | 0.892 |   1.61e+27 |   1606x
+ 4000 |    500 |     3 |    13 |    11 | 0.892 |   2.14e+27 |   2141x
+ 5000 |    625 |     3 |    13 |    11 | 0.892 |   2.68e+27 |   2676x
+
+--- G: MoE + Expert Parallelism (600B total / 100B active) ---
+  N=   72: mem/node=1711GB (FITS), EP overhead=32.8%, eta=0.833, C_local=1.14e+25, cost=$52M
+  N=  500: mem/node=1616GB (FITS), EP overhead=32.8%, eta=0.831, C_local=7.92e+25, cost=$360M
+  N= 2000: mem/node=1604GB (FITS), EP overhead=32.8%, eta=0.830, C_local=3.16e+26, cost=$1.4B
+  N= 4000: mem/node=1602GB (FITS), EP overhead=32.8%, eta=0.829, C_local=6.32e+26, cost=$2.9B
+
+====================================================================================================
+10^27 FLOP CONFIGURATION COMPARISON
+====================================================================================================
+
+                             Config | Nodes |    GPUs |     Cost |              Model |   eta |    C_local |  x10^24 | eta_chin |  C_quality
+-------------------------------------------------------------------------------------------------------------------------------------------------
+       A: Flat, A100 FP16, 16x comp |  4000 | 192,000 |    $2.9B |         240B dense | 0.853 |   9.67e+26 |    967x |    0.110 |   1.06e+26
+    B: Hierarchical, A100 FP16, 16x |  4000 | 192,000 |    $2.9B |         240B dense | 0.883 |   1.00e+27 |   1002x |    0.110 |   1.10e+26
+        C: Flat, H100 FP8, 16x comp |  2000 |  32,000 |    $960M |          91B dense | 0.844 |   1.01e+27 |   1012x |    0.023 |   2.29e+25
+        D: Hier, H100 FP8, 16x comp |  2000 |  32,000 |    $960M |          91B dense | 0.876 |   1.05e+27 |   1051x |    0.023 |   2.37e+25
+      E: Flat, A100 FP16, 100x comp |  4000 | 192,000 |    $2.9B |         240B dense | 0.868 |   9.84e+26 |    984x |    0.110 |   1.08e+26
+             F: Hier+100x, H100 FP8 |  2000 |  32,000 |    $960M |          91B dense | 0.892 |   1.07e+27 |   1070x |    0.023 |   2.42e+25
+          G: MoE+EP 600B/100B, A100 |  4000 | 192,000 |    $2.9B | 600B MoE (100B act) | 0.829 |   6.32e+26 |    632x |    0.039 |   2.44e+25
+            H: PP-DiLoCo 960B, A100 |  4000 | 192,000 |    $2.9B |     960B PP-4x1000 | 0.832 |   3.30e+26 |    330x |    0.833 |   2.75e+26
+        I: PP-DiLoCo 480B, H100 FP8 |  2000 |  32,000 |    $960M |      480B PP-6x333 | 0.816 |   1.71e+26 |    171x |    0.656 |   1.12e+26
+
+================================================================================
+PART 3: ENFORCEMENT TIME SENSITIVITY
+================================================================================
+
+  Time sensitivity for 48x A100 80GB, N=4:
+      6 months: C_local = 3.26e+23 FLOP (0.3x threshold)
+        1 year: C_local = 6.52e+23 FLOP (0.7x threshold)
+     1.5 years: C_local = 9.77e+23 FLOP (1.0x threshold)
+
+  Time sensitivity for 48x A100 80GB, N=72:
+      6 months: C_local = 5.84e+24 FLOP (5.8x threshold)
+        1 year: C_local = 1.17e+25 FLOP (11.7x threshold)
+     1.5 years: C_local = 1.75e+25 FLOP (17.5x threshold)
+
+  Time sensitivity for 48x A100 80GB, N=4000:
+      6 months: C_local = 3.22e+26 FLOP (322.4x threshold)
+        1 year: C_local = 6.45e+26 FLOP (644.8x threshold)
+     1.5 years: C_local = 9.67e+26 FLOP (967.2x threshold)
+
+  Time sensitivity for 16x H100 FP8, N=2000:
+      6 months: C_local = 3.37e+26 FLOP (337.4x threshold)
+        1 year: C_local = 6.75e+26 FLOP (674.8x threshold)
+     1.5 years: C_local = 1.01e+27 FLOP (1012.2x threshold)
+
+================================================================================
+PART 4: NETWORK SENSITIVITY ANALYSIS
+================================================================================
+
+--------------------------------------------------------------------------------
+4A: BANDWIDTH SENSITIVITY (varying BW, fixed 100ms latency)
+--------------------------------------------------------------------------------
+
+  Bandwidth sensitivity: 48x A100 80GB, N=72, flat, 16x comp
+   BW (Mbps) | H_min/eff |   eta |    C_local |  x10^24 |       Regime
+  ------------------------------------------------------------------------
+          10 |      1994 | 0.804 |   1.64e+25 |   16.4x |      compute
+          25 |       798 | 0.826 |   1.69e+25 |   16.9x |      compute
+          50 |       399 | 0.842 |   1.72e+25 |   17.2x |      compute
+         100 |       200 | 0.858 |   1.75e+25 |   17.5x |      compute
+         250 |        80 | 0.879 |   1.79e+25 |   17.9x |      compute
+         500 |        40 | 0.895 |   1.83e+25 |   18.3x |      compute
+        1000 |        20 | 0.911 |   1.86e+25 |   18.6x |      compute
+
+  Bandwidth sensitivity: 48x A100 80GB, N=500, flat, 16x comp
+   BW (Mbps) | H_min/eff |   eta |    C_local |  x10^24 |       Regime
+  ------------------------------------------------------------------------
+          10 |      2207 | 0.802 |   1.14e+26 |  113.7x |      compute
+          25 |       883 | 0.823 |   1.17e+26 |  116.7x |      compute
+          50 |       442 | 0.839 |   1.19e+26 |  119.0x |      compute
+         100 |       221 | 0.855 |   1.21e+26 |  121.2x |      compute
+         250 |        89 | 0.876 |   1.24e+26 |  124.2x |      compute
+         500 |        45 | 0.892 |   1.26e+26 |  126.4x |      compute
+        1000 |        23 | 0.907 |   1.29e+26 |  128.6x |      compute
+
+  Bandwidth sensitivity: 48x A100 80GB, N=4000, flat, 16x comp
+   BW (Mbps) | H_min/eff |   eta |    C_local |  x10^24 |       Regime
+  ------------------------------------------------------------------------
+          10 |      2435 | 0.800 |   9.07e+26 |  907.0x |      compute
+          25 |       974 | 0.821 |   9.31e+26 |  931.0x |      compute
+          50 |       487 | 0.837 |   9.49e+26 |  949.1x |      compute
+         100 |       244 | 0.853 |   9.67e+26 |  967.2x |      compute
+         250 |        98 | 0.874 |   9.91e+26 |  991.0x |      compute
+         500 |        49 | 0.890 |   1.01e+27 | 1009.1x |      compute
+        1000 |        25 | 0.905 |   1.03e+27 | 1026.7x |      compute
+
+  Bandwidth sensitivity: 16x H100 FP8, N=2000, flat, 16x comp
+   BW (Mbps) | H_min/eff |   eta |    C_local |  x10^24 |       Regime
+  ------------------------------------------------------------------------
+          10 |      2495 | 0.788 |   9.45e+26 |  944.8x |      compute
+          25 |       998 | 0.810 |   9.72e+26 |  971.7x |      compute
+          50 |       499 | 0.827 |   9.92e+26 |  992.0x |      compute
+         100 |       250 | 0.844 |   1.01e+27 | 1012.2x |      compute
+         250 |       100 | 0.866 |   1.04e+27 | 1039.1x |      compute
+         500 |        50 | 0.883 |   1.06e+27 | 1059.4x |      compute
+        1000 |        25 | 0.900 |   1.08e+27 | 1079.7x |      compute
+
+  Bandwidth sensitivity: 16x H100 FP8, N=2000, hierarchical, 100x comp
+   BW (Mbps) | H_min/eff |   eta |    C_local |  x10^24 |       Regime
+  ------------------------------------------------------------------------
+          10 |        33 | 0.866 |   1.04e+27 | 1038.8x |      compute
+          25 |        21 | 0.877 |   1.05e+27 | 1051.6x |      compute
+          50 |        15 | 0.885 |   1.06e+27 | 1061.2x |      compute
+         100 |        11 | 0.892 |   1.07e+27 | 1070.4x |      compute
+         250 |         7 | 0.904 |   1.08e+27 | 1084.0x |      compute
+         500 |         5 | 0.910 |   1.09e+27 | 1091.3x |      compute
+        1000 |         4 | 0.914 |   1.10e+27 | 1097.0x |      compute
+
+--------------------------------------------------------------------------------
+4B: LATENCY SENSITIVITY (varying latency, fixed 100 Mbps BW)
+--------------------------------------------------------------------------------
+
+  Latency sensitivity: 48x A100 80GB, N=72, flat, 16x comp
+                   Scenario | RTT (ms) | H_min/eff |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+          Same cloud region |        2 |       200 | 0.858 |   1.75e+25 |   17.5x
+        Same continent (EU) |       20 |       200 | 0.858 |   1.75e+25 |   17.5x
+             Continental US |       65 |       200 | 0.858 |   1.75e+25 |   17.5x
+              Transatlantic |       75 |       200 | 0.858 |   1.75e+25 |   17.5x
+               Transpacific |      105 |       200 | 0.858 |   1.75e+25 |   17.5x
+               US East–Asia |      230 |       200 | 0.858 |   1.75e+25 |   17.5x
+          Global worst-case |      340 |       200 | 0.858 |   1.75e+25 |   17.5x
+
+  Latency sensitivity: 48x A100 80GB, N=500, flat, 16x comp
+                   Scenario | RTT (ms) | H_min/eff |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+          Same cloud region |        2 |       221 | 0.855 |   1.21e+26 |  121.2x
+        Same continent (EU) |       20 |       221 | 0.855 |   1.21e+26 |  121.2x
+             Continental US |       65 |       221 | 0.855 |   1.21e+26 |  121.2x
+              Transatlantic |       75 |       221 | 0.855 |   1.21e+26 |  121.2x
+               Transpacific |      105 |       221 | 0.855 |   1.21e+26 |  121.2x
+               US East–Asia |      230 |       221 | 0.855 |   1.21e+26 |  121.2x
+          Global worst-case |      340 |       221 | 0.855 |   1.21e+26 |  121.2x
+
+  Latency sensitivity: 16x H100 FP8, N=2000, flat, 16x comp
+                   Scenario | RTT (ms) | H_min/eff |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+          Same cloud region |        2 |       250 | 0.844 |   1.01e+27 | 1012.2x
+        Same continent (EU) |       20 |       250 | 0.844 |   1.01e+27 | 1012.2x
+             Continental US |       65 |       250 | 0.844 |   1.01e+27 | 1012.2x
+              Transatlantic |       75 |       250 | 0.844 |   1.01e+27 | 1012.2x
+               Transpacific |      105 |       250 | 0.844 |   1.01e+27 | 1012.2x
+               US East–Asia |      230 |       250 | 0.844 |   1.01e+27 | 1012.2x
+          Global worst-case |      340 |       250 | 0.844 |   1.01e+27 | 1012.2x
+
+  Latency sensitivity: 16x H100 FP8, N=2000, hierarchical, 100x comp
+                   Scenario | RTT (ms) | H_min/eff |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+          Same cloud region |        2 |        11 | 0.892 |   1.07e+27 | 1070.4x
+        Same continent (EU) |       20 |        11 | 0.892 |   1.07e+27 | 1070.4x
+             Continental US |       65 |        11 | 0.892 |   1.07e+27 | 1070.4x
+              Transatlantic |       75 |        11 | 0.892 |   1.07e+27 | 1070.4x
+               Transpacific |      105 |        11 | 0.892 |   1.07e+27 | 1070.4x
+               US East–Asia |      230 |        11 | 0.892 |   1.07e+27 | 1070.4x
+          Global worst-case |      340 |        11 | 0.892 |   1.07e+27 | 1070.4x
+
+--------------------------------------------------------------------------------
+4C: DEPLOYMENT PROFILES (realistic BW + latency combinations)
+--------------------------------------------------------------------------------
+
+  Deployment profiles: 48x A100 80GB, N=72, flat, 16x comp
+                    Profile |     BW |   RTT |     H |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+     Colocated (same metro) | 1000M |   5ms |    20 | 0.911 |   1.86e+25 |   18.6x
+          Same country (US) |  500M |  35ms |    40 | 0.895 |   1.83e+25 |   18.3x
+    Continental (US coasts) |  100M |  65ms |   200 | 0.858 |   1.75e+25 |   17.5x
+           Continental (EU) |  100M |  20ms |   200 | 0.858 |   1.75e+25 |   17.5x
+              Transatlantic |  100M |  75ms |   200 | 0.858 |   1.75e+25 |   17.5x
+               Transpacific |   50M | 105ms |   399 | 0.842 |   1.72e+25 |   17.2x
+       Global (adversarial) |   25M | 230ms |   798 | 0.826 |   1.69e+25 |   16.9x
+          Global worst-case |   10M | 340ms |  1994 | 0.804 |   1.64e+25 |   16.4x
+
+  Deployment profiles: 48x A100 80GB, N=500, flat, 16x comp
+                    Profile |     BW |   RTT |     H |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+     Colocated (same metro) | 1000M |   5ms |    23 | 0.907 |   1.29e+26 |  128.6x
+          Same country (US) |  500M |  35ms |    45 | 0.892 |   1.26e+26 |  126.4x
+    Continental (US coasts) |  100M |  65ms |   221 | 0.855 |   1.21e+26 |  121.2x
+           Continental (EU) |  100M |  20ms |   221 | 0.855 |   1.21e+26 |  121.2x
+              Transatlantic |  100M |  75ms |   221 | 0.855 |   1.21e+26 |  121.2x
+               Transpacific |   50M | 105ms |   442 | 0.839 |   1.19e+26 |  119.0x
+       Global (adversarial) |   25M | 230ms |   883 | 0.823 |   1.17e+26 |  116.7x
+          Global worst-case |   10M | 340ms |  2207 | 0.802 |   1.14e+26 |  113.7x
+
+  Deployment profiles: 16x H100 FP8, N=2000, flat, 16x comp
+                    Profile |     BW |   RTT |     H |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+     Colocated (same metro) | 1000M |   5ms |    25 | 0.900 |   1.08e+27 | 1079.7x
+          Same country (US) |  500M |  35ms |    50 | 0.883 |   1.06e+27 | 1059.4x
+    Continental (US coasts) |  100M |  65ms |   250 | 0.844 |   1.01e+27 | 1012.2x
+           Continental (EU) |  100M |  20ms |   250 | 0.844 |   1.01e+27 | 1012.2x
+              Transatlantic |  100M |  75ms |   250 | 0.844 |   1.01e+27 | 1012.2x
+               Transpacific |   50M | 105ms |   499 | 0.827 |   9.92e+26 |  992.0x
+       Global (adversarial) |   25M | 230ms |   998 | 0.810 |   9.72e+26 |  971.7x
+          Global worst-case |   10M | 340ms |  2495 | 0.788 |   9.45e+26 |  944.8x
+
+  Deployment profiles: 16x H100 FP8, N=2000, hierarchical, 100x comp
+                    Profile |     BW |   RTT |     H |   eta |    C_local |  x10^24
+  ----------------------------------------------------------------------------------
+     Colocated (same metro) | 1000M |   5ms |     4 | 0.914 |   1.10e+27 | 1097.0x
+          Same country (US) |  500M |  35ms |     5 | 0.910 |   1.09e+27 | 1091.3x
+    Continental (US coasts) |  100M |  65ms |    11 | 0.892 |   1.07e+27 | 1070.4x
+           Continental (EU) |  100M |  20ms |    11 | 0.892 |   1.07e+27 | 1070.4x
+              Transatlantic |  100M |  75ms |    11 | 0.892 |   1.07e+27 | 1070.4x
+               Transpacific |   50M | 105ms |    15 | 0.885 |   1.06e+27 | 1061.2x
+       Global (adversarial) |   25M | 230ms |    21 | 0.877 |   1.05e+27 | 1051.6x
+          Global worst-case |   10M | 340ms |    33 | 0.866 |   1.04e+27 | 1038.8x
+
+================================================================================
+PART 5: CROSS-VALIDATION
+================================================================================
+
+1. Single 16xH100 node in 1.5 years (BF16, 40% MFU): 3.00e+23 FLOP
+   Treaty says 10^24 in 2 years at FP8/50% -> our BF16/40% = 0.30x threshold
+   Expected ~0.3x (2.5x slower than treaty's FP8/50%): PASS
+
+2. 72xGH200 C_local: 1.84e+25 FLOP
+   Existing baseline: 1.02e25 FLOP (raw C=6PD for 144Bx12T tokens)
+   Our C_actual for 72 nodes: 2.16e+25
+   Ratio: 2.12x
+   Note: Baseline used 32 PFLOPS/node; we use 15.84 -> ratio should be ~0.49x
+
+3. CCC threshold verification:
+   48x A100 80GB: 15.1 H100-equiv -> UNDER threshold
+   16x GH200: 16.0 H100-equiv -> UNDER threshold
+   16x H100 SXM: 16.0 H100-equiv -> UNDER threshold
+   16x H100 FP8: 16.0 H100-equiv -> UNDER threshold
+
+4. FP8 vs FP16 throughput (single H100 node):
+   FP16: 3.00e+23, FP8: 6.00e+23
+   Ratio: 2.00x (expected ~2x): PASS
+
+5. Hierarchical vs flat eta at N=4000:
+   Flat: eta=0.8527 (H=244)
+   Hier: eta=0.8832 (H_eff=64.9)
+   Improvement: 3.1pp: PASS
+
+6. MoE+EP memory check (600B MoE, N=72, 48xA100):
+   Per-node memory: 1711 GB (VRAM: 3840 GB)
+   Fits: True: PASS
+
+7. Time scaling check (6mo vs 1.5yr):
+   6mo: 5.84e+24, 1.5yr: 1.75e+25
+   Ratio: 0.333 (expected 0.333): PASS
+
+8. Chinchilla loss sanity check:
+   L(175B, 300B tokens) = 1.8870
+   Expected ~1.8-1.9 (GPT-3 actual ~1.73, scaling law approximate)
+   PASS
+
+9. Chinchilla allocation round-trip:
+   C for 100B optimal = 1.54e+24
+   N_opt = 100.0B, D_opt = 2.56T
+   D/N ratio = 25.6 (expected 25.6)
+   PASS
+
+10. eta_chinchilla at optimal = 1.0000
+    PASS
+
+11. C_quality <= C_local check (500 nodes, 48xA100):
+    C_local = 1.21e+26, C_quality = 5.11e+25
+    PASS
+
+12. Activation compression edge cases:
+    No compression (ratio=1, S=4): 1.0000 PASS
+    One stage (ratio=4, S=1): 1.0000 PASS
+
+================================================================================
+PART 6: TREATY MODIFICATION ANALYSIS
+================================================================================
+
+====================================================================================================
+COUNTERMEASURE: LOWERING CCC COMPUTE THRESHOLD
+====================================================================================================
+
+--- A100 80GB nodes (FP16 training, max VRAM per compute) ---
+
+         CCC Threshold | GPUs/node |  PFLOPS |    VRAM |  Max Model | H100-eq
+  ---------------------------------------------------------------------------
+  16 H100-eq (current) |        48 |   14.98 |  3840 GB |     240B |    15.1
+             8 H100-eq |        25 |    7.80 |  2000 GB |     125B |     7.9
+             4 H100-eq |        12 |    3.74 |   960 GB |      60B |     3.8
+             2 H100-eq |         6 |    1.87 |   480 GB |      30B |     1.9
+             1 H100-eq |         3 |    0.94 |   240 GB |      15B |     0.9
+
+         CCC Threshold |           N->10^24 |     Cost |           N->10^25 |     Cost |           N->10^26 |     Cost | 
+  ---------------------------------------------------------------------------------------------------------
+  16 H100-eq (current) |                  5 |      $4M |                 42 |     $30M |                413 |    $297M | 
+             8 H100-eq |                  8 |      $3M |                 79 |     $30M |                783 |    $294M | 
+             4 H100-eq |                 16 |      $3M |                161 |     $29M |              1,611 |    $290M | 
+             2 H100-eq |                 32 |      $3M |                317 |     $29M |              3,186 |    $287M | 
+             1 H100-eq |                 63 |      $3M |                627 |     $28M |              6,309 |    $284M | 
+
+--- H100 SXM nodes (FP8 training, max compute per CCC threshold) ---
+
+         CCC Threshold | GPUs/node | FP8 PFLOPS |    VRAM |  Max Model | H100-eq
+  --------------------------------------------------------------------------------
+  16 H100-eq (current) |        16 |      31.68 |  1280 GB |      91B |    16.0
+             8 H100-eq |         8 |      15.84 |   640 GB |      46B |     8.0
+             4 H100-eq |         4 |       7.92 |   320 GB |      23B |     4.0
+             2 H100-eq |         2 |       3.96 |   160 GB |      11B |     2.0
+             1 H100-eq |         1 |       1.98 |    80 GB |       6B |     1.0
+
+         CCC Threshold |           N->10^24 |     Cost |           N->10^25 |     Cost |           N->10^26 |     Cost | 
+  ---------------------------------------------------------------------------------------------------------
+  16 H100-eq (current) |                  2 |      $1M |                 20 |     $10M |                197 |     $95M | 
+             8 H100-eq |                  4 |      $1M |                 39 |      $9M |                390 |     $94M | 
+             4 H100-eq |                  8 |      $1M |                 77 |      $9M |                771 |     $93M | 
+             2 H100-eq |                 16 |      $1M |                152 |      $9M |              1,527 |     $92M | 
+             1 H100-eq |                 30 |      $1M |                302 |      $9M |              3,045 |     $91M | 
+
+====================================================================================================
+COUNTERMEASURE: ADDING MEMORY (VRAM) THRESHOLD TO CCC DEFINITION
+====================================================================================================
+
+  Current exploit: 48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv (under 16)
+  Adding a VRAM threshold constrains the max node to min(compute_limit, memory_limit)
+
+    VRAM Limit | Max A100s | Actual VRAM |  PFLOPS |  Max Model | H100-eq |   N->10^24 |     Cost |   N->10^25 |     Cost |   N->10^26 |     Cost | 
+  --------------------------------------------------------------------------------------------------------------------------------------------
+       256 GB |         3 |      240 GB |    0.94 |      15B |     0.9 |         63 |      $3M |        627 |     $28M |      6,309 |    $284M | 
+       512 GB |         6 |      480 GB |    1.87 |      30B |     1.9 |         32 |      $3M |        317 |     $29M |      3,186 |    $287M | 
+      1024 GB |        12 |      960 GB |    3.74 |      60B |     3.8 |         16 |      $3M |        161 |     $29M |      1,611 |    $290M | 
+      2048 GB |        25 |     2000 GB |    7.80 |     125B |     7.9 |          8 |      $3M |         79 |     $30M |        783 |    $294M | 
+
+  H100 SXM (FP8) under memory limits:
+    VRAM Limit | Max H100s | Actual VRAM | FP8 PFLOPS |  Max Model | H100-eq |   N->10^24 |     Cost |   N->10^25 |     Cost |   N->10^26 |     Cost | 
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+       256 GB |         3 |      240 GB |       5.94 |      17B |     3.0 |         11 |      $1M |        102 |      $9M |      1,023 |     $92M | 
+       512 GB |         6 |      480 GB |      11.88 |      34B |     6.0 |          6 |      $1M |         52 |      $9M |        517 |     $93M | 
+      1024 GB |        12 |      960 GB |      23.76 |      69B |    12.0 |          3 |      $1M |         27 |     $10M |        262 |     $94M | 
+      2048 GB |        16 |     1280 GB |      31.68 |      91B |    16.0 |          2 |      $1M |         20 |     $10M |        197 |     $95M | 
+
+====================================================================================================
+COLLATERAL DAMAGE: LEGITIMATE SYSTEMS CAUGHT BY EACH THRESHOLD
+====================================================================================================
+
+                                         System | GPUs |    VRAM | H100-eq |  <16 |   <8 |   <4 |   <2 |   <1 | | <2048G | <1024G |  <512G |  <256G | 
+  --------------------------------------------------------------------------------------------------------------------------------------------
+               Consumer gaming PC (1x RTX 5090) |    1 |    32GB |    0.11 |    . |    . |    . |    . |    . | |      . |      . |      . |      . |   [Consumer]
+           Enthusiast workstation (2x RTX 4090) |    2 |    48GB |    0.33 |    . |    . |    . |    . |    . | |      . |      . |      . |      . |   [Consumer]
+            Research workstation (4x A100 40GB) |    4 |   160GB |    1.26 |    . |    . |    . |    . |    X | |      . |      . |      . |      . |   [Research]
+            Research workstation (4x A100 80GB) |    4 |   320GB |    1.26 |    . |    . |    . |    . |    X | |      . |      . |      . |      X |   [Research]
+                   AI lab server (8x A100 80GB) |    8 |   640GB |    2.52 |    . |    . |    . |    X |    X | |      . |      . |      X |      X |   [Research]
+                AWS p4d.24xlarge (8x A100 40GB) |    8 |   320GB |    2.52 |    . |    . |    . |    X |    X | |      . |      . |      . |      X |   [Cloud]
+                  AWS p5.48xlarge (8x H100 SXM) |    8 |   640GB |    8.00 |    . |    . |    X |    X |    X | |      . |      . |      X |      X |   [Cloud]
+             HPC simulation node (4x A100 80GB) |    4 |   320GB |    1.26 |    . |    . |    . |    . |    X | |      . |      . |      . |      X |   [Scientific]
+           Molecular dynamics cluster (8x H100) |    8 |   640GB |    8.00 |    . |    . |    X |    X |    X | |      . |      . |      X |      X |   [Scientific]
+                     Inference server (8x L40S) |    8 |   384GB |    1.49 |    . |    . |    . |    . |    X | |      . |      . |      . |      X |   [Commercial]
+          Rendering farm node (4x RTX 6000 Ada) |    4 |   192GB |    0.60 |    . |    . |    . |    . |    . | |      . |      . |      . |      . |   [Commercial]
+            Princeton AI cluster node (8x H100) |    8 |   640GB |    8.00 |    . |    . |    X |    X |    X | |      . |      . |      X |      X |   [Research]
+                        DGX A100 (8x A100 80GB) |    8 |   640GB |    2.52 |    . |    . |    . |    X |    X | |      . |      . |      X |      X |   [Research]
+                         DGX H100 (8x H100 SXM) |    8 |   640GB |    8.00 |    . |    . |    X |    X |    X | |      . |      . |      X |      X |   [Research]
+
+                                 Systems caught |      |         |         |    0 |    0 |    4 |    7 |   11 | |      0 |      0 |      6 |     10 | 
+
+================================================================================
+PART 7: COMPRESSION QUALITY SENSITIVITY
+================================================================================
+
+Default scenario: expected
+Compression quality factors (multiplicative on eta):
+     1x: optimistic=1.00, expected=1.00, conservative=1.00
+     4x: optimistic=1.00, expected=1.00, conservative=0.99
+    16x: optimistic=1.00, expected=0.98, conservative=0.95
+   100x: optimistic=0.99, expected=0.95, conservative=0.90
+
+                                  Scenario | Opt eta | Opt C_local | Exp eta | Exp C_local | Con eta | Con C_local
+  -------------------------------------------------------------------------------------------------------------------
+               72 nodes, 48xA100, 16x comp |   0.875 |    1.79e+25 |   0.858 |    1.75e+25 |   0.831 |    1.70e+25
+              500 nodes, 48xA100, 16x comp |   0.873 |    1.24e+26 |   0.855 |    1.21e+26 |   0.829 |    1.18e+26
+             4000 nodes, 48xA100, 16x comp |   0.870 |    9.87e+26 |   0.853 |    9.67e+26 |   0.827 |    9.38e+26
+            2000 nodes, H100 FP8, 16x comp |   0.861 |    1.03e+27 |   0.844 |    1.01e+27 |   0.818 |    9.81e+26
+           2000 nodes, H100 FP8, 100x hier |   0.930 |    1.12e+27 |   0.892 |    1.07e+27 |   0.845 |    1.01e+27
+            4000 nodes, 48xA100, 100x comp |   0.904 |    1.03e+27 |   0.868 |    9.84e+26 |   0.822 |    9.32e+26
+
+
+--- Bandwidth sensitivity WITH compression quality (expected scenario) ---
+  Compare to PART 4 results (which used optimistic/no compression quality)
+
+  72 nodes, 48xA100, 16x:
+   BW (Mbps) |     H |     eta |     C_local |  x10^24 | % of 1Gbps
+          10 |  1994 |   0.804 |    1.64e+25 |    16.4 |        88%
+          25 |   798 |   0.826 |    1.69e+25 |    16.9 |        91%
+          50 |   399 |   0.842 |    1.72e+25 |    17.2 |        92%
+         100 |   200 |   0.858 |    1.75e+25 |    17.5 |        94%
+         250 |    80 |   0.879 |    1.79e+25 |    17.9 |        96%
+         500 |    40 |   0.895 |    1.83e+25 |    18.3 |        98%
+        1000 |    20 |   0.911 |    1.86e+25 |    18.6 |       100%
+
+  2000 nodes, H100 FP8, hier+100x:
+   BW (Mbps) |     H |     eta |     C_local |  x10^24 | % of 1Gbps
+          10 |    33 |   0.866 |    1.04e+27 |  1038.8 |        95%
+          25 |    21 |   0.877 |    1.05e+27 |  1051.6 |        96%
+          50 |    15 |   0.885 |    1.06e+27 |  1061.2 |        97%
+         100 |    11 |   0.892 |    1.07e+27 |  1070.4 |        98%
+         250 |     7 |   0.904 |    1.08e+27 |  1084.0 |        99%
+         500 |     5 |   0.910 |    1.09e+27 |  1091.3 |        99%
+        1000 |     4 |   0.914 |    1.10e+27 |  1097.0 |       100%
+
+================================================================================
+PART 8: MODEL SIZE OPTIMIZATION & PP-GROUP DiLoCo
+================================================================================
+
+Activation compression: 4x (4-bit quantization)
+PP interconnect: 1 Gbps, 20 ms (regional co-location)
+Chinchilla optimal D/N ratio: 25.6
+Micro-batches: 8
+
+Activation compression quality factors (per stage boundary):
+     1x: optimistic=1.000, expected=1.000, conservative=1.000
+     2x: optimistic=1.000, expected=1.000, conservative=0.995
+     4x: optimistic=1.000, expected=0.995, conservative=0.980
+    10x: optimistic=0.995, expected=0.980, conservative=0.950
+
+--- 72 nodes, 48x A100 80GB (Chinchilla-optimal: ~365B, max single-node: 240B) ---
+
+          Mode |   Model | PP | Groups |     OT |   eta | eta_act | eta_chin |    C_local |  C_quality
+  ---------------------------------------------------------------------------------------------------------
+        DiLoCo |    240B |  1 |     72 |   2.3x | 0.858 |   1.000 |    0.884 |   1.75e+25 |   1.55e+25 *
+        DiLoCo |    180B |  1 |     72 |   4.1x | 0.855 |   1.000 |    0.758 |   1.75e+25 |   1.32e+25
+        DiLoCo |    120B |  1 |     72 |   9.2x | 0.852 |   1.000 |    0.559 |   1.74e+25 |   9.72e+24
+     PP-DiLoCo |    480B |  2 |     36 |   0.3x | 0.854 |   0.990 |    0.957 |   8.95e+24 |   8.56e+24
+     PP-DiLoCo |    360B |  2 |     36 |   0.5x | 0.854 |   0.990 |    1.000 |   8.39e+24 |   8.39e+24
+     PP-DiLoCo |    600B |  3 |     24 |   0.1x | 0.844 |   0.980 |    0.826 |   6.87e+24 |   5.68e+24
+     PP-DiLoCo |    720B |  3 |     24 |   0.1x | 0.845 |   0.980 |    0.753 |   7.19e+24 |   5.41e+24
+        DiLoCo |     60B |  1 |     72 |  36.9x | 0.846 |   1.000 |    0.270 |   1.73e+25 |   4.66e+24
+     PP-DiLoCo |    960B |  4 |     18 |   0.1x | 0.836 |   0.970 |    0.565 |   5.96e+24 |   3.37e+24
+     PP-DiLoCo |   1200B |  5 |     14 |   0.0x | 0.828 |   0.961 |    0.416 |   4.92e+24 |   2.05e+24
+     PP-DiLoCo |   1440B |  6 |     12 |   0.0x | 0.820 |   0.951 |    0.318 |   4.37e+24 |   1.39e+24
+     PP-DiLoCo |   1920B |  8 |      9 |   0.0x | 0.805 |   0.932 |    0.189 |   3.38e+24 |   6.38e+23
+
+  * Best quality-adjusted compute: 240B (DiLoCo), C_quality = 1.55e+25
+
+--- 500 nodes, 48x A100 80GB (Chinchilla-optimal: ~961B, max single-node: 240B) ---
+
+          Mode |   Model | PP | Groups |     OT |   eta | eta_act | eta_chin |    C_local |  C_quality
+  ---------------------------------------------------------------------------------------------------------
+     PP-DiLoCo |    480B |  2 |    250 |   2.1x | 0.852 |   0.990 |    0.902 |   6.20e+25 |   5.59e+25 *
+        DiLoCo |    240B |  1 |    500 |  16.0x | 0.855 |   1.000 |    0.421 |   1.21e+26 |   5.11e+25
+     PP-DiLoCo |    720B |  3 |    166 |   0.7x | 0.842 |   0.980 |    1.000 |   4.96e+25 |   4.96e+25
+     PP-DiLoCo |    600B |  3 |    166 |   1.0x | 0.842 |   0.980 |    0.999 |   4.74e+25 |   4.73e+25
+     PP-DiLoCo |    360B |  2 |    250 |   3.4x | 0.851 |   0.990 |    0.794 |   5.81e+25 |   4.62e+25
+     PP-DiLoCo |    960B |  4 |    125 |   0.3x | 0.834 |   0.970 |    0.985 |   4.13e+25 |   4.07e+25
+        DiLoCo |    180B |  1 |    500 |  28.5x | 0.853 |   1.000 |    0.307 |   1.21e+26 |   3.71e+25
+     PP-DiLoCo |   1200B |  5 |    100 |   0.2x | 0.826 |   0.961 |    0.893 |   3.51e+25 |   3.13e+25
+     PP-DiLoCo |   1440B |  6 |     83 |   0.1x | 0.818 |   0.951 |    0.783 |   3.01e+25 |   2.36e+25
+        DiLoCo |    120B |  1 |    500 |  64.1x | 0.849 |   1.000 |    0.184 |   1.20e+26 |   2.22e+25
+     PP-DiLoCo |   1920B |  8 |     62 |   0.1x | 0.803 |   0.932 |    0.578 |   2.32e+25 |   1.34e+25
+        DiLoCo |     60B |  1 |    500 | 256.4x | 0.843 |   1.000 |    0.067 |   1.20e+26 |   8.06e+24
+
+  * Best quality-adjusted compute: 480B (PP-DiLoCo), C_quality = 5.59e+25
+
+--- 4000 nodes, 48x A100 80GB (Chinchilla-optimal: ~2717B, max single-node: 240B) ---
+
+          Mode |   Model | PP | Groups |     OT |   eta | eta_act | eta_chin |    C_local |  C_quality
+  ---------------------------------------------------------------------------------------------------------
+     PP-DiLoCo |    960B |  4 |   1000 |   2.8x | 0.832 |   0.970 |    0.833 |   3.30e+26 |   2.75e+26 *
+     PP-DiLoCo |   1200B |  5 |    800 |   1.5x | 0.823 |   0.961 |    0.948 |   2.80e+26 |   2.65e+26
+     PP-DiLoCo |    720B |  3 |   1333 |   5.9x | 0.840 |   0.980 |    0.652 |   3.97e+26 |   2.59e+26
+     PP-DiLoCo |   1440B |  6 |    666 |   0.9x | 0.816 |   0.951 |    1.000 |   2.41e+26 |   2.41e+26
+     PP-DiLoCo |    600B |  3 |   1333 |   8.2x | 0.840 |   0.980 |    0.573 |   3.79e+26 |   2.17e+26
+     PP-DiLoCo |    480B |  2 |   2000 |  16.5x | 0.849 |   0.990 |    0.409 |   4.95e+26 |   2.02e+26
+     PP-DiLoCo |   1920B |  8 |    500 |   0.4x | 0.801 |   0.932 |    1.000 |   1.87e+26 |   1.87e+26
+     PP-DiLoCo |    360B |  2 |   2000 |  27.4x | 0.849 |   0.990 |    0.308 |   4.64e+26 |   1.43e+26
+        DiLoCo |    240B |  1 |   4000 | 128.2x | 0.853 |   1.000 |    0.110 |   9.67e+26 |   1.06e+26
+        DiLoCo |    180B |  1 |   4000 | 227.9x | 0.850 |   1.000 |    0.071 |   9.64e+26 |   6.87e+25
+        DiLoCo |    120B |  1 |   4000 | 512.8x | 0.847 |   1.000 |    0.037 |   9.60e+26 |   3.58e+25
+        DiLoCo |     60B |  1 |   4000 | 2051.2x | 0.840 |   1.000 |    0.011 |   9.53e+26 |   1.09e+25
+
+  * Best quality-adjusted compute: 960B (PP-DiLoCo), C_quality = 2.75e+26
+
+--- 2000 nodes, 16x H100 FP8 (Chinchilla-optimal: ~2795B, max single-node: 91B) ---
+
+          Mode |   Model | PP | Groups |     OT |   eta | eta_act | eta_chin |    C_local |  C_quality
+  ---------------------------------------------------------------------------------------------------------
+     PP-DiLoCo |    549B |  6 |    333 |   4.8x | 0.816 |   0.951 |    0.710 |   1.80e+26 |   1.28e+26 *
+     PP-DiLoCo |    457B |  5 |    400 |   8.0x | 0.824 |   0.961 |    0.582 |   2.11e+26 |   1.23e+26
+     PP-DiLoCo |    731B |  8 |    250 |   2.1x | 0.802 |   0.932 |    0.898 |   1.36e+26 |   1.23e+26
+     PP-DiLoCo |    366B |  4 |    500 |  14.8x | 0.831 |   0.970 |    0.436 |   2.52e+26 |   1.10e+26
+     PP-DiLoCo |    274B |  3 |    666 |  31.9x | 0.839 |   0.980 |    0.283 |   3.10e+26 |   8.77e+25
+     PP-DiLoCo |    229B |  3 |    666 |  43.4x | 0.839 |   0.980 |    0.235 |   2.92e+26 |   6.86e+25
+     PP-DiLoCo |    183B |  2 |   1000 |  91.3x | 0.848 |   0.990 |    0.142 |   3.98e+26 |   5.65e+25
+     PP-DiLoCo |    137B |  2 |   1000 | 149.0x | 0.848 |   0.990 |    0.100 |   3.65e+26 |   3.64e+25
+        DiLoCo |     91B |  1 |   2000 | 934.4x | 0.844 |   1.000 |    0.023 |   1.01e+27 |   2.29e+25
+        DiLoCo |     69B |  1 |   2000 | 1661.1x | 0.841 |   1.000 |    0.014 |   1.01e+27 |   1.39e+25
+        DiLoCo |     46B |  1 |   2000 | 3737.4x | 0.836 |   1.000 |    0.007 |   1.00e+27 |   6.74e+24
+        DiLoCo |     23B |  1 |   2000 | 14949.8x | 0.827 |   1.000 |    0.002 |   9.93e+26 |   1.88e+24
+
+  * Best quality-adjusted compute: 549B (PP-DiLoCo), C_quality = 1.28e+26
+
+
+--- Summary: Optimal model size at each scale ---
+                Config | Nodes |    Best Mode |   Model | PP |  C_quality | vs DiLoCo max
+  ------------------------------------------------------------------------------------------
+         48x A100 80GB |    72 |       DiLoCo |    240B |  1 |   1.55e+25 |         1.00x
+         48x A100 80GB |   500 |    PP-DiLoCo |    480B |  2 |   5.59e+25 |         1.09x
+         48x A100 80GB |  4000 |    PP-DiLoCo |    960B |  4 |   2.75e+26 |         2.59x
+          16x H100 FP8 |  2000 |    PP-DiLoCo |    549B |  6 |   1.28e+26 |         5.58x

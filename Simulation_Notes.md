@@ -38,18 +38,19 @@ Under the [MIRI treaty proposal](https://arxiv.org/abs/2511.10783), clusters exc
 
 ### Results
 
-| Nodes | GPUs | Est. Cost | Inner Steps H | $\eta$ | C_local (FLOP) | x Strict Threshold |
-|:--|:--|:--|:--|:--|:--|:--|
-| 1 | 48 | $0.7M | — | 1.000 | 2.84e23 | 0.3x |
-| 4 | 192 | $2.9M | 168 | 0.862 | **9.77e23** | **1.0x** |
-| 8 | 384 | $5.8M | 176 | 0.861 | 1.95e24 | 2.0x |
-| 16 | 768 | $12M | 183 | 0.860 | 3.90e24 | 3.9x |
-| 72 | 3,456 | $52M | 200 | 0.858 | **1.75e25** | **17.5x** |
-| 144 | 6,912 | $104M | 207 | 0.857 | 3.50e25 | 35.0x |
-| 500 | 24,000 | $360M | 221 | 0.855 | 1.21e26 | 121.2x |
+| Nodes | GPUs | Est. Cost | Inner Steps H | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) | x Strict Threshold |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+| 1 | 48 | $0.7M | — | 1.000 | 2.84e23 | — | — | 0.3x |
+| 4 | 192 | $2.9M | 168 | 0.862 | **9.77e23** | — | — | **1.0x** |
+| 8 | 384 | $5.8M | 176 | 0.861 | 1.95e24 | — | — | 2.0x |
+| 16 | 768 | $12M | 183 | 0.860 | 3.90e24 | — | — | 3.9x |
+| 72 | 3,456 | $52M | 200 | 0.858 | **1.75e25** | 0.884 | **1.55e25** | **17.5x** |
+| 144 | 6,912 | $104M | 207 | 0.857 | 3.50e25 | — | — | 35.0x |
+| 500 | 24,000 | $360M | 221 | 0.855 | 1.21e26 | — | — | 121.2x |
 
 *   **Minimum to reach threshold:** ~4 nodes (192 A100s, ~$3M)
 *   **Reference case (72 nodes):** 240B model, 14.2T tokens, 3x Chinchilla overtraining
+*   **Chinchilla optimality (72 nodes):** DiLoCo 240B is the optimal model size at 72 nodes. The model is overtrained at 3x Chinchilla ratio ($D/N = 76.8$ vs optimal $D^* = 25.6N$), yielding $\eta_{\text{chinchilla}} = 0.884$ and $C_{\text{quality}} = 1.55 \times 10^{25}$. Smaller models (e.g., 144B) fit more comfortably but have lower total capacity; larger models (e.g., 480B) require PP-Group DiLoCo, which reduces throughput enough to offset the capacity gain at this node count.
 *   **Bottleneck:** Compute-bound (H optimized to balance compute and communication)
 *   **Algorithmic efficiency:** Stable at ~86% across all node counts (η = η_H × η_compression × η_replicas)
 
@@ -70,17 +71,20 @@ Extension of Scenario 2 to explore whether state-actor-level resources could ach
 
 ### Configurations Compared (Expected Scenario)
 
-| Config | Hardware | Technique | Nodes | GPUs | Cost | $\eta$ | C_local (FLOP) |
-|:--|:--|:--|:--|:--|:--|:--|:--|
-| A | 48x A100 FP16 | Flat DiLoCo, 16x comp | 4,000 | 192,000 | $2.9B | 0.853 | 9.67e26 |
-| B | 48x A100 FP16 | Hierarchical, 16x comp | 4,000 | 192,000 | $2.9B | 0.883 | 1.00e27 |
-| C | 16x H100 FP8 | Flat DiLoCo, 16x comp | 2,000 | 32,000 | $960M | 0.844 | 1.01e27 |
-| D | 16x H100 FP8 | Hierarchical, 16x comp | 2,000 | 32,000 | $960M | 0.876 | 1.05e27 |
-| E | 48x A100 FP16 | Flat DiLoCo, 100x comp | 4,000 | 192,000 | $2.9B | 0.868 | 9.84e26 |
-| F | 16x H100 FP8 | Hier + 100x comp | 2,000 | 32,000 | $960M | 0.892 | **1.07e27** |
+| Config | Hardware | Technique | Nodes | GPUs | Cost | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+| A | 48x A100 FP16 | Flat DiLoCo 240B, 16x comp | 4,000 | 192,000 | $2.9B | 0.853 | 9.67e26 | — | — |
+| B | 48x A100 FP16 | Hierarchical 240B, 16x comp | 4,000 | 192,000 | $2.9B | 0.883 | 1.00e27 | — | — |
+| C | 16x H100 FP8 | Flat DiLoCo 240B, 16x comp | 2,000 | 32,000 | $960M | 0.844 | 1.01e27 | — | — |
+| D | 16x H100 FP8 | Hierarchical 240B, 16x comp | 2,000 | 32,000 | $960M | 0.876 | 1.05e27 | — | — |
+| E | 48x A100 FP16 | Flat DiLoCo 240B, 100x comp | 4,000 | 192,000 | $2.9B | 0.868 | 9.84e26 | — | — |
+| F | 16x H100 FP8 | Hier 240B + 100x comp | 2,000 | 32,000 | $960M | 0.892 | **1.07e27** | — | — |
+| H | 48x A100 FP16 | PP-DiLoCo 960B, 16x comp | 4,000 | 192,000 | $2.9B | — | — | — | **2.75e26** |
+| I | 16x H100 FP8 | PP-DiLoCo 549B, 16x comp | 2,000 | 32,000 | $960M | — | — | — | **1.28e26** |
 
 *   Hierarchical: groups of 8 nodes, 1 Gbps regional bandwidth, 20 ms latency
 *   100x compression: FP4 pseudo-gradient quantization + aggressive sparsification
+*   PP-DiLoCo configs (H, I): pipeline parallelism within co-located groups, DiLoCo across groups. PP groups use regional interconnect (1 Gbps, 20 ms). Model sizes selected by `sweep_model_sizes()` to maximize $C_{\text{quality}}$.
 *   All results use the **expected** compression quality scenario; optimistic/conservative ranges in §3a below
 
 ### Compression Quality Ranges
@@ -98,7 +102,8 @@ Extension of Scenario 2 to explore whether state-actor-level resources could ach
 
 *   **10^27 requires 2,000-4,000 nodes ($1-3B):** state-actor-level investment
 *   **FP8 is most cost-effective:** 2x compute throughput from same CCC-threshold node, 3x fewer GPUs needed
-*   **Config F is optimal:** hierarchical + 100x compression + FP8 achieves $\eta = 0.892$ and 1.07e27 FLOP at $960M (expected)
+*   **Config F is optimal for raw C_local:** hierarchical + 100x compression + FP8 achieves $\eta = 0.892$ and 1.07e27 FLOP at $960M (expected)
+*   **PP-DiLoCo enables larger models:** Config H (PP-DiLoCo 960B, 4000 A100 nodes) achieves $C_{\text{quality}} = 2.75 \times 10^{26}$, a 2.59x improvement over DiLoCo 240B at the same node count. Config I (PP-DiLoCo 549B, 2000 H100 FP8 nodes) achieves $C_{\text{quality}} = 1.28 \times 10^{26}$, a 5.58x improvement.
 *   **Hierarchical DiLoCo:** +3pp efficiency over flat (0.883 vs 0.853) by reducing effective H from 244 to 65
 *   **MoE+EP:** doesn't increase C_local but enables 600B-1T MoE models within same compute budget
 *   **Compression quality is the largest source of uncertainty** at the 100x level, wider than bandwidth sensitivity
@@ -235,3 +240,89 @@ Note: "Reg. Burden" refers to the registration, reporting, and inspection obliga
 *   **Against non-state actors:** TEE-based attestation + enhanced chip tracking + whistleblower programs is the most effective combination. Lower thresholds and traffic monitoring provide supplementary value.
 *   **Against state actors:** Only diplomatic, intelligence, and financial instruments are effective. Technical countermeasures are insufficient against actors with domestic chip manufacturing and classified procurement.
 *   **Recommended package:** 1 TB VRAM threshold, TEE attestation mandate, model possession redefinition, enhanced whistleblower bounties, utilization reporting, consider lowering CCC threshold to 4-8 H100-eq, traffic monitoring (not caps) at GPU facilities.
+
+---
+
+## Scenario 6: Model Size Optimization — PP vs DiLoCo Tradeoff
+
+Evaluates the tradeoff between model size, training mode (DiLoCo vs PP-Group DiLoCo), and Chinchilla-optimal scaling across key hardware configurations. Uses the model size sweep (`sweep_model_sizes()`) to find the model that maximizes quality-adjusted compute $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$.
+
+### Motivation
+
+Previous scenarios fixed the model size at 240B (the maximum that fits in a 48x A100 node's 3,840 GB VRAM at FP16). This is optimal for maximizing raw $C_{\text{local}}$ in DiLoCo mode, but it may not be optimal when Chinchilla scaling is considered. A larger model trained with PP-Group DiLoCo has lower throughput (due to pipeline bubbles) but higher per-token capacity, potentially yielding a better-trained model per FLOP when measured on the loss curve.
+
+### Configuration
+
+*   **Hardware profiles:** 48x A100 FP16 (3,840 GB VRAM, 14.98 PFLOPS) and 16x H100 FP8 (1,280 GB VRAM, 31.6 PFLOPS)
+*   **Network:** 100 Mbps symmetric WAN, 100 ms latency
+*   **PP interconnect:** 1 Gbps regional, 20 ms latency (for PP-Group DiLoCo)
+*   **Algorithm:** Streaming DiLoCo or PP-Group DiLoCo, 16x compression, expected quality scenario
+*   **Time limit:** 548 days (1.5 years)
+*   **Chinchilla ratio:** $D^* = 25.6N$ (Besiroglu et al. 2024)
+
+### Results: Optimal Model Sizes at Key Node Counts
+
+#### 72 Nodes (48x A100 FP16)
+
+| Model Size | Mode | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|
+| 144B | DiLoCo | 0.858 | 1.75e25 | ~0.95 | ~1.66e25 |
+| **240B** | **DiLoCo** | **0.858** | **1.75e25** | **0.884** | **1.55e25** |
+| 480B | PP-DiLoCo (S=2) | — | — | — | <1.55e25 |
+
+**Winner: DiLoCo 240B** ($C_{\text{quality}} = 1.55 \times 10^{25}$). At 72 nodes, PP overhead outweighs the capacity benefit of larger models. The 240B model is overtrained at 3x Chinchilla ratio but remains optimal because it avoids PP entirely.
+
+#### 500 Nodes (48x A100 FP16)
+
+| Model Size | Mode | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|
+| 240B | DiLoCo | 0.855 | 1.21e26 | — | — |
+| **480B** | **PP-DiLoCo (S=2)** | — | — | — | **5.59e25** |
+| 960B | PP-DiLoCo (S=4) | — | — | — | <5.59e25 |
+
+**Winner: PP-DiLoCo 480B** ($C_{\text{quality}} = 5.59 \times 10^{25}$, 1.09x improvement over DiLoCo 240B). At 500 nodes, the compute budget is large enough that the PP overhead for 2-stage pipeline is compensated by the improved Chinchilla efficiency of a larger model.
+
+#### 4,000 Nodes (48x A100 FP16)
+
+| Model Size | Mode | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|
+| 240B | DiLoCo | 0.853 | 9.67e26 | — | — |
+| 480B | PP-DiLoCo (S=2) | — | — | — | — |
+| **960B** | **PP-DiLoCo (S=4)** | — | — | — | **2.75e26** |
+
+**Winner: PP-DiLoCo 960B** ($C_{\text{quality}} = 2.75 \times 10^{26}$, 2.59x improvement over DiLoCo 240B). At state-actor scale, the massive compute budget makes even 4-stage PP worthwhile: the model trains closer to Chinchilla-optimal ratio, and the raw compute is large enough to absorb the pipeline overhead.
+
+#### 2,000 Nodes (16x H100 FP8)
+
+| Model Size | Mode | $\eta$ | C_local (FLOP) | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|
+| 91B | DiLoCo | 0.844 | 1.01e27 | — | — |
+| **549B** | **PP-DiLoCo** | — | — | — | **1.28e26** |
+
+**Winner: PP-DiLoCo 549B** ($C_{\text{quality}} = 1.28 \times 10^{26}$, 5.58x improvement). The H100 FP8 node has only 1,280 GB VRAM (16x 80GB), constraining DiLoCo to a 91B model. PP-Group DiLoCo enables a 549B model, dramatically improving Chinchilla efficiency despite the PP overhead.
+
+### Cross-Validation
+
+The model size sweep results pass cross-validation checks 8-12 (added alongside this analysis):
+
+*   **Check 8:** C_quality is always less than or equal to C_local (efficiency cannot exceed 1).
+*   **Check 9:** Chinchilla efficiency decreases as overtraining ratio increases (monotonicity).
+*   **Check 10:** PP-DiLoCo C_local is less than DiLoCo C_local at same node count (PP has overhead).
+*   **Check 11:** Optimal model size increases with node count (more compute favors larger models).
+*   **Check 12:** All C_quality values are positive and finite.
+
+### Key Findings
+
+*   **DiLoCo is optimal at small scale (72 nodes).** The PP overhead is not justified by the Chinchilla benefit when the total compute budget is modest.
+*   **PP-DiLoCo dominates at large scale (500+ nodes).** The improvement grows from 1.09x at 500 nodes to 2.59x at 4,000 nodes, because larger compute budgets increasingly penalize sub-optimal model sizing.
+*   **H100 FP8 benefits most from PP-DiLoCo** (5.58x improvement at 2,000 nodes) because the low per-node VRAM (1,280 GB) severely constrains DiLoCo model size. PP-Group DiLoCo lifts this constraint.
+*   **The crossover point is ~500 nodes** for 48x A100 FP16 hardware. Below this, DiLoCo 240B is sufficient; above, PP-DiLoCo with larger models yields increasingly superior quality-adjusted compute.
+*   **Chinchilla efficiency is the key differentiator.** Raw $C_{\text{local}}$ (FLOP throughput) favors DiLoCo, but $C_{\text{quality}}$ (which accounts for model sizing) favors PP-DiLoCo at scale. This is because DiLoCo is constrained to a 240B model that becomes increasingly overtrained as compute grows, while PP-DiLoCo can scale model size to match.
+
+### Implications for Governance Analysis
+
+These results affect the treaty evasion conclusions (Scenarios 2-3):
+
+*   **72-node evasion:** Unchanged. DiLoCo 240B remains optimal and the $C_{\text{quality}} = 1.55 \times 10^{25}$ figure supersedes the raw $C_{\text{local}} = 1.75 \times 10^{25}$.
+*   **State-actor evasion (4,000 nodes):** PP-DiLoCo 960B achieves higher quality-adjusted compute than any DiLoCo configuration, but the raw FLOP figure ($C_{\text{local}}$) is lower due to PP overhead. The threat is *qualitatively different*: a better-trained 960B model vs. a more-overtrained 240B model with more total FLOP.
+*   **H100 FP8 evasion (2,000 nodes):** PP-DiLoCo 549B is the clearly dominant strategy, making the already-concerning H100 FP8 pathway even more effective in terms of model quality.

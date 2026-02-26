@@ -8,6 +8,8 @@ This analysis examines a specific evasion scenario: an actor operates multiple u
 
 **Question:** How much local-equivalent compute can the evader achieve in the maximum training duration?
 
+**Scope: pretraining only.** This analysis focuses exclusively on the pretraining phase — the initial large-scale training run that produces a base model. Pretraining is the phase most amenable to detection because it requires coordinating all hardware simultaneously over an extended period, creating observable patterns in chip procurement, power consumption, and network traffic. Post-training procedures (reinforcement learning from human feedback, RL rollouts, instruction tuning) are excluded because they are (a) substantially less compute-intensive than pretraining and (b) highly parallelizable across independent, small-scale compute instances. An evader could perform post-training on commodity hardware without the concentrated GPU clusters that the treaty's monitoring mechanisms are designed to detect. Detection efforts should therefore focus on the pretraining phase.
+
 ## 2. Time Limit
 
 Under the treaty's restrictions on hardware concentration, AI research, and compute spending, the growth rates for hardware efficiency ($g_H$), software efficiency ($g_S$), and investment ($g_I$) are all substantially reduced. Using the maximum training duration formula from [Epoch AI](https://epoch.ai/blog/the-longest-training-run):
@@ -28,7 +30,7 @@ The CCC threshold limits **compute capacity** (FLOP/s), not memory. An evader wo
 
 (A100 SXM 80GB: 312 TFLOPS FP16. 48 x 312 = 14,976 TFLOPS = 15.1 H100-equivalents, under the 16-equivalent threshold.)
 
-The **48x A100 80GB** configuration is optimal: nearly the same compute as 16x H100 but **3x the VRAM**, enabling a 240B-parameter model to fit entirely on one node without model parallelism. This avoids the severe latency penalties of pipeline parallelism over WAN.
+The **48x A100 80GB** configuration is optimal for flat DiLoCo: nearly the same compute as 16x H100 but **3x the VRAM**, enabling a 240B-parameter model to fit entirely on one node without model parallelism. However, as shown in Section 5.4, an evader could also use **PP-Group DiLoCo** to train models larger than single-node VRAM by co-locating pipeline stages on regional interconnects. This trades fewer DiLoCo groups for a closer-to-optimal model size, which becomes advantageous at large scale (500+ nodes).
 
 ## 4. Training Protocol and Compression Assumptions
 
@@ -38,11 +40,12 @@ Each node runs as an independent DiLoCo worker:
 
 | Parameter | Value | Rationale |
 |:--|:--|:--|
-| Mode | Streaming DiLoCo | Overlaps communication with compute |
+| Mode | Streaming DiLoCo (flat or PP-Group) | Overlaps communication with compute |
 | Inner Steps (H) | ~168-229 (optimized per N) | Minimum for compute-bound operation |
-| Compression | 16x (default) or 100x (aggressive) | 4-bit quantization + sparsification |
+| Pseudo-gradient compression | 16x (default) or 100x (aggressive) | 4-bit quantization + sparsification of weight deltas |
+| Activation compression (PP only) | 4x (4-bit quantization) | Compress hidden-state tensors between PP stages |
 | Local Batch | 131,072 tokens | 32 sequences x 4,096 seq length |
-| Model | 240B dense (on 48x A100) | Largest model that fits in memory |
+| Model | 240B dense (flat) or up to ~960B (PP-Group) | Flat: max single-node; PP: larger via pipeline |
 | Precision | BF16/FP16 | Standard mixed-precision training |
 | MFU | 40% | Empirically supported for distributed training |
 
@@ -52,9 +55,15 @@ $$H_{\min} = \left\lceil \frac{T_{\text{sync}}}{T_{\text{comp}}} \right\rceil = 
 
 ### 4.2 Efficiency Model
 
-The simulator computes local-equivalent FLOPs as $C_{\text{local}} = N \cdot \text{FLOPS}_{\text{eff}} \cdot T_{\text{wall}} \cdot \eta$, where $\eta$ is a combined efficiency factor with three components:
+The simulator computes local-equivalent FLOPs as $C_{\text{local}} = N \cdot \text{FLOPS}_{\text{eff}} \cdot T_{\text{wall}} \cdot \eta$, where $\eta$ is a combined efficiency factor. For flat DiLoCo (model fits on one node):
 
-$$\eta = \eta_H \times \eta_{\text{compression}} \times \eta_{\text{replicas}}$$
+$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}}$$
+
+For PP-Group DiLoCo (model sharded across pipeline stages):
+
+$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}} \times \eta_{\text{act-compression}}$$
+
+The simulator also computes **quality-adjusted compute** $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{Chinchilla}}$, which accounts for the quality cost of training a non-optimally-sized model (Section 5.4).
 
 **Sync interval penalty ($\eta_H$):** The primary efficiency loss from using large H (many inner steps between synchronization). More inner steps cause replicas to diverge further from each other, reducing the quality of the averaged pseudo-gradient:
 
@@ -62,16 +71,31 @@ $$\eta_H = \max\!\left(0.4,\; 1 - \alpha \cdot \log_{10}(H)\right), \quad \alpha
 
 The $\alpha$ coefficient decreases with model size, reflecting the empirical finding from the [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) paper that larger models are more robust to infrequent synchronization. This is the dominant efficiency factor, accounting for 8-16% loss depending on H and model size.
 
-**Compression quality ($\eta_{\text{compression}}$):** A multiplicative penalty from quantizing and sparsifying the pseudo-gradients before transmission. This factor is parameterized by compression ratio and estimated from the literature under three scenarios:
+**Pseudo-gradient compression quality ($\eta_{\text{pg-compression}}$):** A multiplicative penalty from quantizing and sparsifying the pseudo-gradients (weight deltas) before transmission during DiLoCo synchronization. This occurs every H inner steps and is the only compression type in flat DiLoCo mode. Parameterized by compression ratio:
 
-| Compression | Optimistic | Expected | Conservative | Evidence |
+| Pseudo-gradient Compression | Optimistic | Expected | Conservative | Evidence |
 |:--|:--|:--|:--|:--|
 | 1x (none) | 1.00 | 1.00 | 1.00 | Baseline |
 | 4x (FP4 only) | 1.00 | 1.00 | 0.99 | Lossless at 4B ([Streaming DiLoCo](https://arxiv.org/abs/2501.18512)) and 15B ([MuLoCo](https://arxiv.org/abs/2505.23725)) |
 | 16x (FP4 + 4x sparse) | 1.00 | 0.98 | 0.95 | FP4 component validated; sparsification at 25% tested at 512M ([SparseLoCo](https://arxiv.org/abs/2508.15706)) |
 | 100x (2-bit + TopK or FP4 + 25x) | 0.99 | 0.95 | 0.90 | Validated only at 512M-1B; significant extrapolation to 100B+ |
 
-The "expected" scenario is used as the primary estimate throughout this analysis, with optimistic/conservative ranges noted where they materially affect conclusions. See Section 11 for the full literature review underlying these estimates.
+The "expected" scenario is used as the primary estimate throughout this analysis, with optimistic/conservative ranges noted where they materially affect conclusions. See Section 10 for the full literature review underlying these estimates.
+
+**Activation compression quality ($\eta_{\text{act-compression}}$, PP-Group DiLoCo only):** In PP-Group DiLoCo, hidden-state activation tensors are transferred between pipeline stages at every micro-batch. These can be compressed (e.g., 4-bit quantization), but unlike pseudo-gradient errors (which average across replicas), activation errors accumulate through the pipeline — each stage boundary introduces error in both the forward and backward passes:
+
+$$\eta_{\text{act-compression}} = q_{\text{per-boundary}}^{2(S-1)}$$
+
+where $S$ is the number of pipeline stages and $q_{\text{per-boundary}}$ is the per-boundary quality factor:
+
+| Activation Compression | Optimistic | Expected | Conservative | Evidence |
+|:--|:--|:--|:--|:--|
+| 1x (none) | 1.00 | 1.00 | 1.00 | Baseline |
+| 2x (FP8) | 1.00 | 1.00 | 0.995 | Universally near-lossless ([COAT](https://arxiv.org/abs/2410.19313), [SWARM](https://arxiv.org/abs/2301.11913)) |
+| 4x (4-bit adaptive) | 1.00 | 0.995 | 0.98 | Near-lossless ([TAH-Quant](https://arxiv.org/abs/2506.06984), [GACT](https://proceedings.mlr.press/v162/liu22v.html)) |
+| 10x (structural) | 0.995 | 0.98 | 0.95 | Requires subspace methods; validated at 8B ([Protocol Models](https://arxiv.org/abs/2504.01943)) |
+
+The default activation compression ratio is **4x** (4-bit quantization), which is well-validated in the literature. At 4x with 2 pipeline stages, $\eta_{\text{act}} = 0.995^2 = 0.990$; at 4x with 4 stages, $\eta_{\text{act}} = 0.995^6 = 0.970$. See Section 10.6 for the literature review.
 
 **Replica count penalty ($\eta_{\text{replicas}}$):** Averaging pseudo-gradients across many replicas introduces noise. Based on the [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) empirical data (M=8 costs ~1.2% at 2.4B parameters, with the penalty decreasing at larger model sizes), this factor is modeled as:
 
@@ -85,9 +109,10 @@ The simulator's predictions carry different levels of confidence depending on th
 
 | Configuration | Confidence | Basis |
 |:--|:--|:--|
-| 16x compression, 4-72 nodes | **High** | FP4 validated lossless at 15B; DiLoCo tested at 10B; replica counts modest |
-| 16x compression, 500+ nodes | **Medium** | Compression well-validated; replica count extrapolated (largest test: M=16 at 15B) |
-| 100x compression, any scale | **Low-Medium** | Only validated at 512M-1B; requires error feedback (not in all implementations); significant extrapolation |
+| 16x pseudo-gradient compression, 4-72 nodes | **High** | FP4 validated lossless at 15B; DiLoCo tested at 10B; replica counts modest |
+| 16x pseudo-gradient compression, 500+ nodes | **Medium** | Compression well-validated; replica count extrapolated (largest test: M=16 at 15B) |
+| 100x pseudo-gradient compression, any scale | **Low-Medium** | Only validated at 512M-1B; requires error feedback (not in all implementations); significant extrapolation |
+| PP-Group DiLoCo with 4x activation compression | **Medium** | FP8/4-bit activation compression well-validated; PP bubble formula standard; depth accumulation uncertain at >4 stages |
 | 2000+ nodes, any compression | **Low** | No empirical data at this replica count; Epoch AI projects ~6x FLOP penalty at 10,000 nodes |
 
 ## 5. Results
@@ -96,47 +121,87 @@ The simulator's predictions carry different levels of confidence depending on th
 
 All results use the **expected** compression quality scenario (Section 4.2). Optimistic values (no compression penalty) and conservative values are shown in parentheses where they differ materially.
 
-| Nodes | GPUs | Est. Cost | Inner Steps H | $\eta$ | C_local (FLOP) | x Strict Threshold |
-|:--|:--|:--|:--|:--|:--|:--|
-| 1 | 48 | $0.7M | 1 (no DiLoCo) | 1.000 | 2.84 x 10^23 | 0.3x |
-| 4 | 192 | $2.9M | 168 | 0.862 | **9.77 x 10^23** | **1.0x** |
-| 8 | 384 | $5.8M | 176 | 0.861 | 1.95 x 10^24 | 2.0x |
-| 16 | 768 | $12M | 183 | 0.860 | 3.90 x 10^24 | 3.9x |
-| 32 | 1,536 | $23M | 191 | 0.859 | 7.79 x 10^24 | 7.8x |
-| 72 | 3,456 | $52M | 200 | 0.858 | **1.75 x 10^25** | **17.5x** |
-| 144 | 6,912 | $104M | 207 | 0.857 | 3.50 x 10^25 | 35.0x |
-| 500 | 24,000 | $360M | 221 | 0.855 | 1.21 x 10^26 | 121.2x |
+| Nodes | GPUs | Est. Cost | H | $\eta$ | C_local (FLOP) | x Threshold | OT Ratio | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+| 1 | 48 | $0.7M | 1 | 1.000 | 2.84 x 10^23 | 0.3x | 0.0x | 1.000 | 2.84 x 10^23 |
+| 4 | 192 | $2.9M | 168 | 0.862 | **9.77 x 10^23** | **1.0x** | 0.1x | 0.781 | 7.64 x 10^23 |
+| 8 | 384 | $5.8M | 176 | 0.861 | 1.95 x 10^24 | 2.0x | 0.3x | 0.926 | 1.81 x 10^24 |
+| 16 | 768 | $12M | 183 | 0.860 | 3.90 x 10^24 | 3.9x | 0.5x | 1.000 | 3.90 x 10^24 |
+| 32 | 1,536 | $23M | 191 | 0.859 | 7.79 x 10^24 | 7.8x | 1.0x | 0.998 | 7.78 x 10^24 |
+| 72 | 3,456 | $52M | 200 | 0.858 | **1.75 x 10^25** | **17.5x** | 2.3x | 0.884 | **1.55 x 10^25** |
+| 144 | 6,912 | $104M | 207 | 0.857 | 3.50 x 10^25 | 35.0x | 4.6x | 0.726 | 2.54 x 10^25 |
+| 500 | 24,000 | $360M | 221 | 0.855 | 1.21 x 10^26 | 121.2x | 16.0x | 0.421 | 5.11 x 10^25 |
+
+The **overtraining ratio** (OT) is the ratio of actual training tokens to the Chinchilla-optimal token count ($D^* = 25.6 \times N$, per the [corrected Chinchilla scaling law](https://arxiv.org/abs/2404.10102)). The **Chinchilla efficiency** $\eta_{\text{chin}}$ quantifies the compute-allocation penalty from training a non-optimally-sized model relative to Chinchilla-optimal. **C_quality** $= C_{\text{local}} \times \eta_{\text{chin}}$ is the quality-adjusted compute — the amount of optimally-allocated compute that would produce the same model quality.
+
+**Note on overtraining in practice:** The Chinchilla scaling law minimizes the loss of a single forward pass per training FLOP. In practice, developers intentionally overtrain models because each trained model is used for many inference calls. A moderately overtrained smaller model provides better cost-efficiency at inference time than a Chinchilla-optimal larger model, because inference cost scales with model size. When a model's lifetime inference compute approximately equals its training compute, moderate overtraining (2-10x) is optimal from a total-cost perspective. The $\eta_{\text{chin}}$ metric is therefore a conservative (pessimistic) measure of effective compute: it overstates the practical cost of overtraining, particularly in the 2-10x range where production models typically operate. Only extreme overtraining (>50x) represents unambiguous waste regardless of inference amortization.
+
+At 72 nodes, C_quality = 1.55 x 10^25, reflecting the mild overtraining (2.3x) of a 240B model — well within the range that developers actively prefer. At 500 nodes, overtraining reaches 16x and $\eta_{\text{chin}}$ drops to 0.42. While 16x overtraining is beyond what developers typically choose, the real quality penalty is smaller than $\eta_{\text{chin}}$ suggests due to inference amortization. Nonetheless, at very large node counts the overtraining ratio becomes extreme (128x at 4,000 nodes), motivating the PP-Group DiLoCo analysis in Section 5.4, where larger models reduce overtraining.
 
 The 72-node reference point shows $\eta = 0.858$ under the expected scenario (optimistic: 0.875; conservative: 0.831). The corresponding C_local range is **1.70-1.79 x 10^25 FLOP** — the conclusion that 72 nodes exceeds the Strict Threshold by ~17x is robust across all compression quality assumptions.
 
-The **algorithmic efficiency** ($\eta$) is stable at 85-86% across all node counts. Under the optimistic scenario (no compression quality penalty), efficiency would be 87-88%. The 2% difference reflects the expected cost of 16x gradient compression extrapolated to 240B scale.
+The **algorithmic efficiency** ($\eta$) is stable at 85-86% across all node counts. Under the optimistic scenario (no compression quality penalty), efficiency would be 87-88%. The 2% difference reflects the expected cost of 16x pseudo-gradient compression extrapolated to 240B scale.
 
 ### 5.2 Model Quality Analysis
 
-The evader trains a **240B-parameter dense model**. At various node counts:
+The evader trains a **240B-parameter dense model** in flat DiLoCo mode. Using the corrected Chinchilla-optimal token count $D^* = 25.6 \times N$ ([Besiroglu et al. 2024](https://arxiv.org/abs/2404.10102)):
 
 | Nodes | Total Tokens | Chinchilla Tokens (240B) | Overtraining Ratio | Assessment |
 |:--|:--|:--|:--|:--|
-| 4 | 0.8T | 4.8T | 0.2x | **Under-trained** (would use a smaller model) |
-| 16 | 3.2T | 4.8T | 0.7x | Near Chinchilla-optimal |
-| 32 | 6.3T | 4.8T | 1.3x | Mildly overtrained |
-| 72 | 14.2T | 4.8T | 3.0x | **Moderately overtrained** (comparable to LLaMA-3) |
-| 144 | 28.4T | 4.8T | 5.9x | Overtrained (diminishing returns) |
+| 4 | 0.8T | 6.1T | 0.1x | **Under-trained** (would use a smaller model) |
+| 16 | 3.2T | 6.1T | 0.5x | Below optimal |
+| 32 | 6.3T | 6.1T | 1.0x | Near Chinchilla-optimal |
+| 72 | 14.2T | 6.1T | 2.3x | **Moderately overtrained** (industry-standard; preferred for production) |
+| 144 | 28.4T | 6.1T | 4.6x | Overtrained (still practical; comparable to LLaMA-3 at ~10x) |
+| 500 | 98.5T | 6.1T | 16.0x | Heavily overtrained (beyond typical practice; $\eta_{\text{chin}} = 0.42$) |
 
-At the **72-node** reference point: 240B params trained on 14.2T tokens with 3.0x overtraining is a highly effective training configuration, comparable to how production models like LLaMA-3 are trained (which used ~10x overtraining).
+At the **72-node** reference point: 240B params trained on 14.2T tokens with 2.3x overtraining is not a penalty — it is in fact the preferred regime for production deployments, where inference amortization makes moderate overtraining cost-optimal. This is comparable to how production models like LLaMA-3 are trained (which used ~10x overtraining). The $\eta_{\text{chin}} = 0.88$ represents a conservative lower bound; accounting for inference amortization, the effective penalty of 2.3x overtraining is negligible.
 
-For small node counts (N < 16), the evader would train a proportionally smaller model to stay near Chinchilla-optimal. For example, at N=4 with C_local = 10^24 FLOP, the Chinchilla-optimal model is ~29B params on ~0.6T tokens, which fits easily within the 240B memory budget.
+At **500+ nodes**, overtraining reaches 16x, which is beyond what developers typically choose but not catastrophic — the real quality penalty is smaller than $\eta_{\text{chin}} = 0.42$ suggests. However, at 4,000 nodes the ratio reaches 128x, which represents genuine waste even accounting for inference amortization. The Chinchilla-optimal model for 500 nodes' compute budget is ~960B — far larger than the 240B that fits on a single node. This motivates PP-Group DiLoCo (Section 5.4), where pipeline stages allow training larger models.
+
+For small node counts (N < 16), the evader would train a proportionally smaller model to stay near Chinchilla-optimal. For example, at N=4 with C_local = 10^24 FLOP, the Chinchilla-optimal model is ~29B params on ~0.7T tokens, which fits easily within the 240B memory budget.
 
 ### 5.3 Comparison to Existing 10^25 Baseline
 
-The [existing baseline scenario](Past%20MIRI%20work/10%5E25%20FLOP%20decentralized%20training%20configuration.md) used 72 nodes of 16x GH200 (32 PFLOPS/node, 2,304 GB) to train a 144B model on 12T tokens (1.02 x 10^25 FLOP) in 331 days. It was communication-bound.
+The [existing baseline scenario](Past%20MIRI%20work/10%5E25%20FLOP%20decentralized%20training%20configuration.md) used 72 nodes of 16x GH200 (~15.8 PFLOPS/node FP16, 2,304 GB) to train a 144B model on 12T tokens (1.02 x 10^25 FLOP) in 331 days. It was communication-bound.
 
 This analysis differs in three ways:
-1. **Lower compute per node** (15 vs 32 PFLOPS) — stays under the CCC threshold
-2. **Higher memory per node** (3,840 vs 2,304 GB) — enables a larger 240B model
+1. **Similar compute per node** (~15 vs ~15.8 PFLOPS) — both near the CCC threshold boundary
+2. **Higher memory per node** (3,840 vs 2,304 GB) — enables a larger 240B model (vs 144B)
 3. **Longer time** (548 vs 331 days) — the treaty scenario allows 1.5 years
 
-Result: even with half the per-node compute, the longer time window and compute-bound operation yield **1.75 x 10^25 local-equivalent FLOP** (expected) — comparable to the baseline's 1.02 x 10^25 raw compute.
+Result: with similar per-node compute but more VRAM and a longer training window, DiLoCo's compute-bound operation yields **1.75 x 10^25 local-equivalent FLOP** (expected) — a 1.7x improvement over the baseline's 1.02 x 10^25 raw compute. The improvement comes from DiLoCo's compute-bound operation (vs the baseline's communication-bound regime) and the longer training window.
+
+### 5.4 PP-Group DiLoCo and Chinchilla Optimality
+
+The flat DiLoCo results in Section 5.1 all train the largest model that fits on a single node (240B for 48x A100). At large node counts, this leads to increasingly extreme overtraining: 16x at 500 nodes, and 128x at 4,000 nodes. While moderate overtraining (2-10x) is preferred in practice due to inference amortization, overtraining beyond ~50x represents genuine waste. The Chinchilla-optimal model for 500 nodes' compute budget is ~960B — far larger than what fits on one node.
+
+**PP-Group DiLoCo** addresses this by grouping $S$ co-located nodes into pipeline stages that collectively hold a larger model, then running DiLoCo across $G = N/S$ groups over WAN. The co-located pipeline groups use regional interconnect (1 Gbps, 20 ms latency), while DiLoCo synchronization uses WAN as before. Activation tensors passed between pipeline stages are compressed using 4-bit quantization (4x compression, $\eta_{\text{act}} = 0.995^{2(S-1)}$).
+
+**The fundamental tradeoff:** PP-Group DiLoCo trains a larger (closer-to-optimal) model but with fewer DiLoCo groups, reducing throughput. The GPipe pipeline bubble also adds overhead: $(S-1)/(M+S-1)$ fraction of compute is wasted in the bubble, where $M=8$ micro-batches.
+
+**Model size sweep results (expected scenario):**
+
+| Nodes | Best Mode | Model | PP Stages | Groups | OT | $\eta$ | $\eta_{\text{chin}}$ | C_quality | vs Flat 240B |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+| 72 | DiLoCo | 240B | 1 | 72 | 2.3x | 0.858 | 0.884 | 1.55 x 10^25 | 1.0x |
+| 500 | PP-DiLoCo | 480B | 2 | 250 | 2.1x | 0.852 | 0.902 | 5.59 x 10^25 | 1.09x |
+| 4,000 | PP-DiLoCo | 960B | 4 | 1,000 | 2.8x | 0.832 | 0.833 | **2.75 x 10^26** | **2.59x** |
+| 2,000 (H100 FP8) | PP-DiLoCo | 549B | 6 | 333 | 4.8x | 0.816 | 0.710 | **1.28 x 10^26** | **5.58x** |
+
+**Key findings:**
+
+1. **At 72 nodes, flat DiLoCo is still optimal.** The 2.3x overtraining is mild, and splitting 72 nodes into 36 pipeline groups halves throughput, which is not compensated by better Chinchilla efficiency.
+
+2. **At 500 nodes, PP-DiLoCo gives a modest 9% improvement** by training a 480B model (2 stages, 250 groups) instead of 240B (500 groups). The overtraining drops from 16x to 2.1x.
+
+3. **At 4,000 nodes, PP-DiLoCo gives 2.6x improvement.** Training a 960B model (4 stages, 1,000 groups) produces 2.75 x 10^26 quality-adjusted FLOP versus 1.06 x 10^26 for flat DiLoCo at 240B. The flat approach overtrains at 128x Chinchilla tokens — well beyond the ~10x range where inference amortization provides a practical benefit, and into genuinely wasteful territory.
+
+4. **For H100 FP8 nodes, PP-DiLoCo is essential.** The max single-node model at FP8 is only 91B, leading to extreme overtraining (934x) at 2,000 nodes. PP-DiLoCo with 6 stages trains a 549B model, improving C_quality by **5.6x**.
+
+5. **The optimal model size is NOT the Chinchilla-optimal model.** The Chinchilla-optimal model for 4,000 A100 nodes is ~2,700B, which would require 12 pipeline stages and suffer 58% bubble overhead. The practical optimum (960B, 4 stages) balances model size against pipeline efficiency.
+
+**Implication for governance:** PP-Group DiLoCo substantially increases the quality of models an evader could train at large scale. An evader with 4,000 nodes could train a 960B model that achieves 2.75 x 10^26 quality-adjusted FLOP — compared to 1.06 x 10^26 for a naive flat approach. However, PP-Group DiLoCo requires co-locating pipeline stages (S nodes within one facility or metro area), which partially re-creates the physical clustering that the treaty's monitoring mechanisms are designed to detect.
 
 ## 6. Governance Implications
 
@@ -162,9 +227,9 @@ DiLoCo training creates a distinctive network "heartbeat": synchronization traff
 
 Without the treaty, the maximum rational training duration is ~4.5 months (rapid hardware/software/investment growth makes longer runs obsolete). The treaty's restrictions on research and compute spending slow these growth rates, extending the maximum duration to ~1.5 years. This gives the evader **4x more training time**, partially offsetting the need to use smaller, unregistered nodes.
 
-### 6.5 Hardware Optimization Defeats the Memory Constraint
+### 6.5 Hardware Optimization and PP-Group DiLoCo
 
-A naive analysis might assume the evader is limited to 16 H100s (80B model). But the CCC threshold is on compute, not memory. By choosing high-memory, lower-compute GPUs (48x A100 80GB), the evader fits a **240B model** on each node — close to the ~400B Chinchilla-optimal model for this compute budget. Pipeline parallelism across WAN nodes is impractical (activation transfers take ~47 seconds per micro-batch at 100 Mbps), but this hardware optimization largely eliminates the need for it.
+A naive analysis might assume the evader is limited to 16 H100s (80B model). But the CCC threshold is on compute, not memory. By choosing high-memory, lower-compute GPUs (48x A100 80GB), the evader fits a **240B model** on each node. Pipeline parallelism over WAN (sending activations between globally distributed nodes) remains impractical (~49 seconds per micro-batch at 100 Mbps), but **PP-Group DiLoCo** — co-locating pipeline stages on regional interconnect — enables training models up to ~960B by grouping 2-4 nodes into pipeline clusters. As shown in Section 5.4, this produces up to **2.6x more quality-adjusted compute** at 4,000 nodes by training a closer-to-Chinchilla-optimal model, though it requires physical co-location of pipeline stages.
 
 ### 6.6 Scaling Is Nearly Linear
 
@@ -210,11 +275,12 @@ For non-state actors, the financial barrier is the primary practical constraint:
 | Metric | Value |
 |:--|:--|
 | **Minimum nodes to reach 10^24 FLOP** | **4 nodes** (~200 A100s, ~$3M) |
-| **Reference scenario (72 nodes)** | **1.75 x 10^25 FLOP** (17.5x threshold, expected) |
-| **Optimistic/conservative range (72 nodes)** | 1.70-1.79 x 10^25 FLOP (17.0-17.9x) |
-| **Model trained (72 nodes)** | 240B dense, 14.2T tokens, 3x overtraining |
+| **Reference scenario (72 nodes, flat DiLoCo)** | **1.75 x 10^25 C_local** (17.5x threshold), **1.55 x 10^25 C_quality** |
+| **Optimistic/conservative range (72 nodes)** | 1.70-1.79 x 10^25 C_local (17.0-17.9x) |
+| **Model trained (72 nodes, flat)** | 240B dense, 14.2T tokens, 2.3x overtraining |
+| **Best quality at 4,000 nodes (PP-DiLoCo)** | **2.75 x 10^26 C_quality** (960B, 4 PP stages, 2.6x better than flat) |
 | **Algorithmic efficiency** | ~86% expected (range: 83-88%) |
-| **Confidence in 16x compression** | High (FP4 validated to 15B; compression penalty ~2% expected) |
+| **Confidence in 16x pseudo-gradient compression** | High (FP4 validated to 15B; penalty ~2% expected) |
 | **Bottleneck** | Network bandwidth at low H; compute-bound when H is optimized |
 | **Detection** | Challenging: low-bandwidth encrypted traffic, no physical signature |
 | **Enforcement time pressure** | 6 months still yields 5.8x threshold at 72 nodes |
@@ -224,36 +290,43 @@ The simulator predicts that the treaty's FLOP threshold can be significantly exc
 
 ## 8. Scaling to 10^27 FLOP and Beyond
 
-The analysis in Sections 5-7 focuses on modest-scale evasion (4-500 nodes). This section explores whether much larger training runs — on the order of **10^27 FLOP** — are achievable using all techniques supported by the simulator: hierarchical DiLoCo, FP8 precision, aggressive gradient compression, and Mixture-of-Experts with Expert Parallelism.
+The analysis in Sections 5-7 focuses on modest-scale evasion (4-500 nodes). This section explores whether much larger training runs — on the order of **10^27 FLOP** — are achievable using all techniques supported by the simulator: hierarchical DiLoCo, FP8 precision, aggressive pseudo-gradient compression, PP-Group DiLoCo, and Mixture-of-Experts with Expert Parallelism.
 
 ### 8.1 Configurations
 
-Six configurations are compared, all using sub-CCC nodes over 100 Mbps WAN. All values use the **expected** compression quality scenario:
+Nine configurations are compared, all using sub-CCC nodes over 100 Mbps WAN. All values use the **expected** compression quality scenario. The table now includes **C_quality** (quality-adjusted compute accounting for Chinchilla-optimality deviation):
 
-| Config | Hardware | Nodes | GPUs | Cost | Model | $\eta$ | C_local (FLOP) |
+| Config | Hardware | Nodes | Model | $\eta$ | C_local | $\eta_{\text{chin}}$ | C_quality |
 |:--|:--|:--|:--|:--|:--|:--|:--|
-| **A** | 48x A100 FP16, flat DiLoCo, 16x comp | 4,000 | 192,000 | $2.9B | 240B dense | 0.853 | 9.67 x 10^26 |
-| **B** | 48x A100 FP16, hierarchical, 16x comp | 4,000 | 192,000 | $2.9B | 240B dense | 0.883 | 1.00 x 10^27 |
-| **C** | 16x H100 FP8, flat DiLoCo, 16x comp | 2,000 | 32,000 | $960M | 91B dense | 0.844 | 1.01 x 10^27 |
-| **D** | 16x H100 FP8, hierarchical, 16x comp | 2,000 | 32,000 | $960M | 91B dense | 0.876 | 1.05 x 10^27 |
-| **E** | 48x A100 FP16, flat DiLoCo, 100x comp | 4,000 | 192,000 | $2.9B | 240B dense | 0.868 | 9.84 x 10^26 |
-| **F** | 16x H100 FP8, hier + 100x comp | 2,000 | 32,000 | $960M | 91B dense | 0.892 | **1.07 x 10^27** |
+| **A** | 48x A100 FP16, flat DiLoCo, 16x | 4,000 | 240B dense | 0.853 | 9.67 x 10^26 | 0.110 | 1.06 x 10^26 |
+| **B** | 48x A100 FP16, hierarchical, 16x | 4,000 | 240B dense | 0.883 | 1.00 x 10^27 | 0.110 | 1.10 x 10^26 |
+| **C** | 16x H100 FP8, flat DiLoCo, 16x | 2,000 | 91B dense | 0.844 | 1.01 x 10^27 | 0.023 | 2.29 x 10^25 |
+| **D** | 16x H100 FP8, hierarchical, 16x | 2,000 | 91B dense | 0.876 | 1.05 x 10^27 | 0.023 | 2.37 x 10^25 |
+| **E** | 48x A100 FP16, flat DiLoCo, 100x | 4,000 | 240B dense | 0.868 | 9.84 x 10^26 | 0.110 | 1.08 x 10^26 |
+| **F** | 16x H100 FP8, hier + 100x comp | 2,000 | 91B dense | 0.892 | 1.07 x 10^27 | 0.023 | 2.42 x 10^25 |
+| **G** | 48x A100 FP16, MoE+EP 600B/100B | 4,000 | 600B MoE | 0.829 | 6.32 x 10^26 | 0.039 | 2.44 x 10^25 |
+| **H** | 48x A100 FP16, PP-DiLoCo 16x | 4,000 | **960B PP-4x1000** | 0.832 | 3.30 x 10^26 | 0.833 | **2.75 x 10^26** |
+| **I** | 16x H100 FP8, PP-DiLoCo 16x | 2,000 | **480B PP-6x333** | 0.816 | 1.71 x 10^26 | 0.656 | **1.12 x 10^26** |
 
-Hierarchical configurations use groups of 8 nodes with 1 Gbps regional interconnect and 20 ms latency (co-located nodes within the same facility or metro area). The 100x compression ratio corresponds to FP4 pseudo-gradient quantization combined with aggressive sparsification, as demonstrated in [Streaming DiLoCo](https://arxiv.org/abs/2501.18512).
+Hierarchical configurations use groups of 8 nodes with 1 Gbps regional interconnect and 20 ms latency (co-located nodes within the same facility or metro area). PP-Group DiLoCo configurations use co-located pipeline groups on regional interconnect, with 4x activation compression. The 100x pseudo-gradient compression ratio corresponds to FP4 quantization combined with aggressive sparsification, as demonstrated in [Streaming DiLoCo](https://arxiv.org/abs/2501.18512).
 
-**Compression quality uncertainty for 100x configurations (E, F):** Under the optimistic scenario, Config F achieves 1.12 x 10^27; under the conservative scenario, it drops to 1.01 x 10^27. The 100x compression assumptions carry significant uncertainty (see Section 11), so these estimates should be treated as bounds rather than point predictions.
+**Compression quality uncertainty for 100x configurations (E, F):** Under the optimistic scenario, Config F achieves 1.12 x 10^27; under the conservative scenario, it drops to 1.01 x 10^27. The 100x compression assumptions carry significant uncertainty (see Section 10), so these estimates should be treated as bounds rather than point predictions.
 
 ### 8.2 Key Findings
 
 **10^27 FLOP requires 2,000-4,000 sub-CCC nodes ($1-3B in hardware).** This is unambiguously a state-actor-level investment. No non-state actor could plausibly acquire 32,000-192,000 GPUs without detection through the treaty's financial monitoring and chip tracking provisions (Section 6.8).
 
-**FP8 precision is the most cost-effective approach.** The CCC threshold is defined by FP16 computational capacity, but FP8 compute yields **2x throughput** from the same hardware, and FP8 pseudo-gradients are half the size, further reducing communication overhead. A node of 16x H100 SXM has 15,840 TFLOPS FP16 (exactly 16 H100-equivalents) but produces 31,680 TFLOPS of effective FP8 compute and transmits pseudo-gradients at 8 bits instead of 16. Config C achieves 10^27 FLOP with only 2,000 nodes and 32,000 H100s ($960M) — 3x fewer GPUs and 3x lower cost than the A100-based configs. The trade-off is a smaller model (91B vs 240B) due to lower VRAM per H100 node (1,280 GB at $\beta = 14$ bytes/param for FP8).
+**C_local vs C_quality: a critical distinction.** The table reveals a dramatic divergence between raw compute (C_local) and quality-adjusted compute (C_quality). Configs A-F achieve 10^27 C_local, but their C_quality ranges from only 2.3 x 10^25 (Config C) to 1.1 x 10^26 (Config B). The reason: all flat DiLoCo configurations at 2,000-4,000 nodes massively overtrain their fixed-size models — Config A trains 128x more tokens than Chinchilla-optimal for 240B. Note that $\eta_{\text{chin}}$ is a conservative metric that overstates the practical cost of overtraining (see Section 5.1 for discussion of inference amortization); however, at the extreme levels seen here (128x-934x), the overtraining is genuinely excessive even accounting for inference. **PP-Group DiLoCo (Config H) achieves the highest C_quality** (2.75 x 10^26) by training a 960B model closer to Chinchilla-optimal, despite lower raw throughput.
+
+**PP-Group DiLoCo is the most effective strategy at scale.** Config H (PP-DiLoCo, 4 stages, 960B model, 1,000 groups) achieves 2.75 x 10^26 C_quality — **2.5x more than the best flat DiLoCo** (Config B, 1.10 x 10^26) and **11x more than the best H100 FP8 flat configuration** (Config D, 2.37 x 10^25). The cost is lower raw throughput (C_local = 3.30 x 10^26 vs 1.00 x 10^27) due to fewer groups and PP bubble overhead, but the larger model makes far better use of each FLOP.
+
+**FP8 precision is cost-effective but benefits greatly from PP.** The CCC threshold is defined by FP16 capacity, but FP8 yields **2x throughput** and FP8 pseudo-gradients are half the size. Config C achieves 10^27 C_local with only 2,000 nodes ($960M) — but its C_quality is only 2.3 x 10^25 due to extreme overtraining of the small 91B model (934x Chinchilla tokens). Config I (PP-DiLoCo, 480B) improves C_quality by **4.9x** to 1.12 x 10^26, making H100 FP8 with PP competitive with A100 flat DiLoCo.
 
 **Hierarchical DiLoCo improves efficiency by 3 percentage points.** At N=4,000, flat DiLoCo achieves $\eta = 0.853$ with $H_{\min} = 244$, while hierarchical DiLoCo achieves $\eta = 0.883$ with $H_{\text{eff}} = 65$. The improvement comes from regional syncs over 1 Gbps LAN, which keep $H_{\text{inner}}$ low (18 steps) while the global sync interval is hidden behind regional cycles.
 
-**100x compression reduces $H_{\min}$ dramatically but carries more uncertainty.** With 100x compression (vs 16x baseline), sync volume drops from 240 Gbit to 38 Gbit per direction, reducing $H_{\min}$ from 244 to 39 at N=4,000. This improves $\eta_H$ from 0.871 to 0.914. However, the compression quality factor ($\eta_{\text{compression}} = 0.95$ expected, vs 0.98 for 16x) partially offsets this gain. The net expected efficiency for Config E is 0.868 — an improvement over Config A (0.853) but not as dramatic as the $\eta_H$ improvement alone would suggest. The 100x compression assumption is based on limited empirical evidence (see Section 11) and represents the least certain component of the analysis.
+**100x pseudo-gradient compression reduces $H_{\min}$ dramatically but carries more uncertainty.** With 100x compression (vs 16x baseline), sync volume drops from 240 Gbit to 38 Gbit per direction, reducing $H_{\min}$ from 244 to 39 at N=4,000. This improves $\eta_H$ from 0.871 to 0.914. However, the pseudo-gradient compression quality factor ($\eta_{\text{pg-compression}} = 0.95$ expected, vs 0.98 for 16x) partially offsets this gain. The net expected efficiency for Config E is 0.868 — an improvement over Config A (0.853) but not as dramatic as the $\eta_H$ improvement alone would suggest. The 100x compression assumption is based on limited empirical evidence (see Section 10) and represents the least certain component of the analysis.
 
-**The combined best case (Config F)** uses hierarchical DiLoCo, 100x compression, and FP8 H100 nodes to achieve **1.07 x 10^27 FLOP** (expected). This configuration achieves $\eta = 0.892$ — the highest efficiency of any scenario — by minimizing the effective synchronization interval ($H_{\text{eff}} = 11$) while applying both hierarchical and compression benefits.
+**The combined best case for raw throughput (Config F)** uses hierarchical DiLoCo, 100x pseudo-gradient compression, and FP8 H100 nodes to achieve **1.07 x 10^27 C_local** (expected). However, its C_quality is only 2.42 x 10^25 due to extreme overtraining of the 91B model. **For quality-adjusted compute, Config H (PP-DiLoCo 960B)** is optimal at 2.75 x 10^26 C_quality.
 
 ### 8.3 Mixture of Experts + Expert Parallelism
 
@@ -279,15 +352,17 @@ These are resources comparable to a major nation's annual military procurement b
 
 ### 8.5 Summary: Scale and Actor Type
 
-| Compute Scale | Nodes (A100) | Cost | Actor Type | Compression Confidence |
-|:--|:--|:--|:--|:--|
-| **10^24** (Strict Threshold) | 4 | $3M | Research lab, wealthy individual | High (16x) |
-| **10^25** (frontier-competitive) | 72 | $52M | Well-funded startup, small state | High (16x) |
-| **10^26** | 500 | $360M | Large corporation, medium state | High (16x) |
-| **10^27** | 2,000-4,000 | $1-3B | Major state actor only | Medium (16x) / Low-Medium (100x) |
-| **10^28** | 20,000-40,000 | $10-29B | Superpower-level resources | Low |
+| Compute Scale (C_quality) | Nodes | Cost | Best Mode | Model | Actor Type |
+|:--|:--|:--|:--|:--|:--|
+| **10^24** (Strict Threshold) | 4 A100 | $3M | Flat DiLoCo | 240B | Research lab, wealthy individual |
+| **10^25** (frontier-competitive) | 72 A100 | $52M | Flat DiLoCo | 240B | Well-funded startup, small state |
+| **10^26** (C_quality) | 500 A100 | $360M | PP-DiLoCo | 480B | Large corporation, medium state |
+| **~3 x 10^26** (C_quality) | 4,000 A100 | $2.9B | PP-DiLoCo | 960B | Major state actor only |
+| **10^27** (C_local) | 2,000-4,000 | $1-3B | Flat/Hier DiLoCo | 91-240B | Major state actor only |
 
-The compute threshold in the treaty (10^24 FLOP) is designed to catch training runs at the **research lab** level and above. Distributed training with DiLoCo makes this threshold porous at the 4-72 node scale ($3-52M), where financial detection is challenging and the compression assumptions are well-validated. At the 10^27+ scale, both the treaty's financial monitoring mechanisms and the compression quality uncertainty become relevant — the hardware procurement itself is the hardest step to conceal, and the achievable compute carries wider error bars.
+Note the distinction between C_local (raw compute) and C_quality (quality-adjusted). While several configurations achieve 10^27 C_local, their C_quality is only ~10^26 due to severe overtraining. An evader optimizing for model quality rather than raw FLOP would prefer PP-DiLoCo (Config H: 960B, C_quality = 2.75 x 10^26) over flat DiLoCo (Config A: 240B, C_quality = 1.06 x 10^26).
+
+The compute threshold in the treaty (10^24 FLOP) is designed to catch training runs at the **research lab** level and above. Distributed training with DiLoCo makes this threshold porous at the 4-72 node scale ($3-52M), where financial detection is challenging and the pseudo-gradient compression assumptions are well-validated. At the 10^27+ scale, both the treaty's financial monitoring mechanisms and the compression quality uncertainty become relevant — the hardware procurement itself is the hardest step to conceal, and the achievable compute carries wider error bars.
 
 ## 9. Network Sensitivity Analysis
 
@@ -416,11 +491,108 @@ The sensitivity analysis reveals three governance-critical findings:
 
 **3. Network-level enforcement is ineffective.** Even if bandwidth restrictions were perfectly enforced, the 12-14% reduction in achievable compute is small relative to the order-of-magnitude exceedance of the Strict Threshold. An evader using consumer broadband loses at most 12-14% of compute versus an optimized local deployment — a minor penalty that does not change whether the threshold is exceeded or by how much. The effective enforcement mechanisms remain chip tracking, financial monitoring, and physical detection of GPU concentrations.
 
-## 10. Treaty Modifications to Close the Distributed Training Loophole
+## 10. Compression Quality: Evidence, Extrapolation, and Open Questions
+
+The efficiency model in Section 4.2 includes compression quality factors that reduce C_local by 2-10% depending on the compression ratio and scenario. This section presents the evidence underlying those estimates. The analysis distinguishes three types of compression:
+
+1. **Pseudo-gradient compression** (DiLoCo sync): Weight deltas (pseudo-gradients) are quantized and sparsified before transmission across WAN every H inner steps. This is the primary compression type in all modes. 16x default, 100x aggressive.
+2. **Activation compression** (PP-Group DiLoCo only): Hidden-state activation tensors are compressed between pipeline stages at every micro-batch. Occurs only when the model is sharded across multiple co-located nodes. 4x default.
+3. **Precision reduction** (FP16 → FP8): Training compute precision. Affects throughput, memory, and the base communication volume, but is not a separate quality factor — FP8 training quality is well-validated and treated as lossless.
+
+### 10.1 What the Simulator Assumes
+
+The simulator's compression quality model applies multiplicative factors to efficiency:
+
+$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}} \times \eta_{\text{act-compression}}$$
+
+where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). The sync interval penalty ($\eta_H$) is the dominant term and is well-calibrated against empirical data (DiLoCo Scaling Laws, 2503.09799). The pseudo-gradient compression quality ($\eta_{\text{pg-compression}}$), replica penalty ($\eta_{\text{replicas}}$), and activation compression quality ($\eta_{\text{act-compression}}$) are estimated from the literature with varying levels of confidence.
+
+**What the simulator does NOT model:**
+- Error feedback (the mechanism for accumulating compression residuals) — whether it is used or needed
+- Interaction effects between compression, replica count, and H
+- Compression-induced outlier accumulation over long training runs
+- The specific choice of compressor (TopK vs random-K, linear vs statistical quantization)
+
+### 10.2 Pseudo-Gradient Compression: Empirical Evidence
+
+| Paper | Scale | Compression | Quality Impact | Notes |
+|:--|:--|:--|:--|:--|
+| [Streaming DiLoCo](https://arxiv.org/abs/2501.18512) (DeepMind, 2025) | 500M-4B, M=2, H=100 | FP4 (E3M0) pseudo-grads | **None detected** | No error feedback; 400x total bandwidth reduction |
+| [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) (DeepMind, 2025) | 35M-10B, M=1-8 | None (tests H only) | M=8 at 2.4B: +1.2% loss | Penalty decreases with model size |
+| [MuLoCo](https://arxiv.org/abs/2505.23725) (2025) | 150M-15B, K=8-16 | 8-bit, 4-bit, 2-bit | 4-bit: lossless; 2-bit+EF: near-lossless | Error feedback critical at 2-bit |
+| [SparseLoCo](https://arxiv.org/abs/2508.15706) (2025) | 512M-2B, R=8-16 | TopK 3% + 2-bit (~50-100x) | **Beats vanilla DiLoCo** at 3% density | Error feedback essential; regularizing effect |
+| [INTELLECT-1](https://arxiv.org/abs/2412.01152) (Prime Intellect, 2024) | 10B, 14 nodes | int8 pseudo-grads (400x total) | Negligible | Real-world WAN validation |
+| [DiLoCoX](https://arxiv.org/abs/2506.21263) (0G Labs, 2025) | 107B, 20 nodes | Low-rank + int4 | 0.3 loss gap vs AllReduce | First 100B+ DiLoCo experiment |
+| [Deep Gradient Compression](https://arxiv.org/abs/1712.01887) (Lin, 2018) | ResNet-50, DeepSpeech | Up to 600x | Lossless with error feedback | Vision/speech models, not LLMs |
+| [Aragani et al.](https://arxiv.org/abs/2502.07634) (2025) | LSTMs, transformers | TopK/DGC up to 5000x | 50x can improve via regularization; >5000x degrades | |
+
+### 10.3 What Is Validated vs. Extrapolated
+
+**Well-validated (high confidence):**
+- FP4 (4-bit) pseudo-gradient quantization is lossless at up to 4B parameters with H=100 and 2 replicas (Streaming DiLoCo)
+- 4-bit quantization is lossless at up to 15B parameters with 16 replicas (MuLoCo)
+- DiLoCo's efficiency penalty decreases with model size (confirmed 35M-10B, DiLoCo Scaling Laws)
+- int8 compression works in practice over real WAN at 10B (INTELLECT-1)
+
+**Partially validated (medium confidence):**
+- 16x compression (FP4 + 4x sparsification): the FP4 component is well-validated; the sparsification component is tested at 512M (SparseLoCo) but not at 100B+
+- DiLoCo at 100B+ scale: DiLoCoX demonstrates feasibility but shows a 0.3 loss gap versus AllReduce
+
+**Extrapolated (low-medium confidence):**
+- 100x compression at 100B+ scale: only validated at 512M-1B; extrapolation spans ~100x in model size
+- 2000+ replicas: largest empirical test is M=16 (MuLoCo); [Epoch AI projects](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale) that 10,000 nodes would require ~6x FLOP for equivalent quality
+- H=200-2000 combined with aggressive compression: largest tested is H=125 with compression (DiLoCoX at 107B)
+
+### 10.4 Key Risk Factors
+
+**Error feedback:** At 2-bit compression and below, error feedback (accumulating the difference between the original and compressed value for the next sync) is critical for convergence. MuLoCo and SparseLoCo both find that error feedback is essential at aggressive compression ratios. However, the Streaming DiLoCo paper does **not** use error feedback, and its lossless results at FP4 may not extend to more aggressive compression without it. Error feedback adds memory overhead (one full model copy for the error buffer — ~3.8 TB additional for a 240B model) and is not included in the simulator's memory model.
+
+**Compounding unknowns:** The scenarios in Section 8 combine multiple factors that have not been tested jointly: (a) large models (91-240B), (b) many replicas (2,000+), (c) high H values (200-2000), and (d) aggressive compression (100x). Each factor has been studied somewhat independently, but the **interaction** is unknown. Even if each factor individually causes <5% degradation, compounding could produce larger effects.
+
+**Scale-dependent outliers:** Quantization during training is known to cause outlier accumulation over long training runs. At 100B+ scale with trillions of tokens, this could be worse than at 1B scale with billions of tokens. Recent work on FP4 training ([Quartet](https://arxiv.org/abs/2505.14669), 2025) shows that most loss gap arises from forward-pass quantization, not gradient quantization — but this applies to per-step gradients, not DiLoCo pseudo-gradients.
+
+### 10.5 Impact on Analysis Conclusions
+
+| Conclusion | Sensitivity to Compression Quality | Robust? |
+|:--|:--|:--|
+| 4 nodes exceed 10^24 (16x comp) | Low — conservative scenario still gives 9.52e23 | **Yes** |
+| 72 nodes achieve ~17x threshold (16x comp) | Low — range is 17.0-17.9x | **Yes** |
+| 500 nodes achieve 10^26 (16x comp) | Low — conservative gives 1.18e26 | **Yes** |
+| Config F achieves 10^27 (100x comp) | **Medium** — expected 1.07e27, conservative 1.01e27 | **Marginal** |
+| 10^27 at 10 Mbps + 100x (Config F) | **High** — conservative drops to ~9.8e26 | **Uncertain** |
+| Bandwidth reduction costs "only 3-6%" | **Medium** — actual total gap is 12-14% with compression quality | **Revised** |
+| Cost of evasion is $3M for 10^24 | None — cost is hardware, not compression-dependent | **Yes** |
+| Treaty modifications analysis | None — countermeasure effectiveness is independent | **Yes** |
+
+The most important revision is to the bandwidth sensitivity headline: the frequently cited "3-6% reduction" referred only to the $\eta_H$ penalty from larger H values, not the total efficiency gap including compression quality. With compression quality included, the total expected gap between optimal (1 Gbps, no compression penalty) and degraded (10 Mbps, expected compression quality) is **12-14%** for 16x compression and **14-18%** for 100x. The qualitative conclusion — that DiLoCo is robust to bandwidth constraints — remains valid, but the quantitative magnitude is larger.
+
+The core governance conclusions (Sections 6-7) are robust across all compression quality scenarios because they rely on 16x pseudo-gradient compression, which is well-validated. The 10^27 scenarios (Section 8) carry meaningful uncertainty, particularly Config F's 100x compression assumption, and should be interpreted as estimates with a +-10% error bar rather than precise predictions.
+
+### 10.6 Activation Compression: Evidence for PP-Group DiLoCo
+
+Activation compression (compressing hidden-state tensors between pipeline stages) is distinct from pseudo-gradient compression. The key difference: activation errors accumulate through the pipeline (each stage boundary introduces error in both forward and backward passes), while pseudo-gradient errors average across replicas.
+
+| Paper | Scale | Compression | Quality Impact | Notes |
+|:--|:--|:--|:--|:--|
+| [COAT](https://arxiv.org/abs/2410.19313) (ICLR 2025) | GPT-2, LLaMA-7B | FP8 activations (2x) | **Near-lossless** | Online dynamic quantization for all linear layers |
+| [SWARM](https://arxiv.org/abs/2301.11913) (ICML 2023) | 1-7B, distributed PP | FP8 activations (2x) | **Near-lossless** | Validated in heterogeneous distributed PP setting |
+| [TAH-Quant](https://arxiv.org/abs/2506.06984) (2025) | GPT-2 XL, Qwen2.5-3B | 4-bit adaptive (4x) | **Near-lossless** | Token-aware heterogeneous quantization |
+| [GACT](https://proceedings.mlr.press/v162/liu22v.html) (ICML 2022) | ResNet, BERT, GPT-2 | 4-bit (4x) → 8x memory | **<0.5% degradation** | Exact gradient computation with quantized activations |
+| [Protocol Models](https://arxiv.org/abs/2504.01943) (2025) | 8B Transformer | 100x (subspace decomposition) | **Lossless** | Decomposes activations into low-rank subspaces; not validated at 100B+ |
+
+**Safe defaults for WAN pipeline parallelism:**
+
+- **FP8 (2x):** Universally validated, no measurable quality loss. Suitable as a baseline.
+- **4-bit adaptive (4x):** Near-lossless per recent literature. The default in this analysis. Per-boundary quality: 0.995 (expected), compounding to 0.990 at 2 stages, 0.970 at 4 stages.
+- **10-16x:** Requires structural methods (subspace decomposition, protocol learning). Validated only at 8B. High risk of accumulation errors at 100B+ with deep pipelines.
+
+**Key risk: depth accumulation.** With $S$ pipeline stages, each activation tensor passes through $2(S-1)$ stage boundaries (forward and backward). At 4x compression with expected quality 0.995 per boundary: $\eta_{\text{act}} = 0.995^{2(S-1)}$. At $S=4$: $\eta_{\text{act}} = 0.97$ (3% penalty). At $S=8$: $\eta_{\text{act}} = 0.93$ (7% penalty). This compounds with all other efficiency factors. Deep pipelines ($S > 6$) carry significant activation compression risk.
+
+## 11. Treaty Modifications to Close the Distributed Training Loophole
 
 The preceding sections establish three facts: (1) the CCC threshold is porous — DiLoCo enables sub-CCC nodes to collectively exceed the Strict Threshold with modest investment; (2) network conditions barely matter — even 10 Mbps consumer broadband suffices; (3) the existing enforcement mechanisms (chip tracking, financial monitoring) are the primary barriers, not the compute threshold itself. This section evaluates specific treaty modifications that could narrow or close the distributed training loophole.
 
-### 10.1 Lowering the CCC Compute Threshold
+### 11.1 Lowering the CCC Compute Threshold
 
 The most direct response is to lower the CCC registration threshold from 16 H100-equivalents. The table below shows the maximum node configuration that fits under each threshold (using A100 80GB, the optimal VRAM/compute hardware):
 
@@ -444,7 +616,7 @@ The most direct response is to lower the CCC registration threshold from 16 H100
 
 **The central finding is that lowering the CCC threshold barely increases the cost of evasion.** Reaching 10^24 FLOP costs approximately $3M regardless of whether the threshold is 16 or 1 H100-equivalent. The evader simply redistributes the same total number of GPUs into more, smaller nodes. The total hardware cost is almost unchanged because the same aggregate compute power is needed.
 
-The impact is on **model quality**, not cost. A 3x A100 node (under 1 H100-eq threshold) can only hold a 15B model, compared to 240B at the current threshold. This forces the evader to either (a) train a much smaller model, or (b) use pipeline parallelism over WAN to shard a larger model across nodes — which incurs severe latency penalties (Section 6.5 estimated ~47 seconds per micro-batch for activation transfers at 100 Mbps). Neither option is attractive, but a 15B model trained on ~3.5T tokens (at 10^24 FLOP) is still a meaningful AI system.
+The impact is on **model quality**, not cost. A 3x A100 node (under 1 H100-eq threshold) can only hold a 15B model, compared to 240B at the current threshold. This forces the evader to either (a) train a much smaller model, or (b) use PP-Group DiLoCo to shard a larger model across co-located pipeline stages (Section 5.4). Option (b) is viable with regional interconnect (1 Gbps, 20 ms) but requires co-locating multiple nodes — partially re-creating the physical clustering the treaty monitors. At the 1 H100-eq threshold, even training a 60B model would require 4 pipeline stages, incurring 27% bubble overhead. A 15B model trained on ~3.5T tokens (at 10^24 FLOP) is still a meaningful AI system, but the lower threshold substantially limits model capability.
 
 **Collateral damage of lowering the threshold:**
 
@@ -462,7 +634,7 @@ However, a lower threshold does have an indirect benefit: it **increases the sur
 
 **Assessment:** Lowering the CCC compute threshold is **modestly effective through indirect mechanisms** (increased inspection surface, model quality degradation) but **does not increase evasion cost**. A moderate reduction to **4-8 H100-equivalents** may represent a reasonable compromise.
 
-### 10.2 Adding Memory to the CCC Definition
+### 11.2 Adding Memory to the CCC Definition
 
 The current CCC threshold is defined solely by compute capacity. Section 6.5 identified the resulting exploit: an evader can select hardware that maximizes VRAM while staying under the compute threshold (48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv), enabling large models (240B) that would be impossible on compute-equivalent H100 nodes (1,280 GB VRAM).
 
@@ -483,7 +655,7 @@ Same pattern as lowering the compute threshold: costs barely change, but model s
 
 **Assessment:** A memory threshold of **1-2 TB** is a reasonable, low-impact addition that closes the 48x A100 exploit without subjecting standard 8-GPU systems to registration.
 
-### 10.3 Bandwidth Restrictions
+### 11.3 Bandwidth Restrictions
 
 Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the treaty mandate bandwidth restrictions on sub-CCC nodes?
 
@@ -496,11 +668,11 @@ Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the
 
 A 10 Mbps cap reduces evasion capability by only 3-6% from baseline. The fundamental problem is DiLoCo's logarithmic bandwidth sensitivity: the evader needs 10x more inner steps but loses only one $\log_{10}$ unit of efficiency.
 
-**Implementation options:** (a) Monitoring WAN connections at registered GPU facilities — lightest touch, provides a detection signal; (b) mandating ISP throttling for GPU facilities — more intrusive, constrains legitimate inference and cloud computing; (c) requiring network registration for AI chip facilities. Option (a) has value as a supplementary detection mechanism (Section 10.4) even though bandwidth *caps* are technically ineffective.
+**Implementation options:** (a) Monitoring WAN connections at registered GPU facilities — lightest touch, provides a detection signal; (b) mandating ISP throttling for GPU facilities — more intrusive, constrains legitimate inference and cloud computing; (c) requiring network registration for AI chip facilities. Option (a) has value as a supplementary detection mechanism (Section 11.4) even though bandwidth *caps* are technically ineffective.
 
 **Assessment:** Bandwidth *caps* are **technically ineffective** — DiLoCo's logarithmic sensitivity to bandwidth means no realistic restriction produces a meaningful reduction in achievable compute. Traffic *monitoring* at GPU facilities has supplementary detection value.
 
-### 10.4 Traffic Fingerprinting and ISP Monitoring
+### 11.4 Traffic Fingerprinting and ISP Monitoring
 
 DiLoCo creates a distinctive network signature: pseudo-gradient synchronization at regular intervals, with identical payload sizes. Could treaty-mandated ISP monitoring detect this pattern?
 
@@ -510,7 +682,7 @@ DiLoCo creates a distinctive network signature: pseudo-gradient synchronization 
 
 **Assessment:** Traffic fingerprinting is a **useful supplementary detection signal** when scoped to registered GPU facilities, but not a reliable primary mechanism. It is best deployed as part of a multi-source intelligence approach, providing corroborating evidence for investigations triggered by other means.
 
-### 10.5 Hardware-Level Enforcement: TEE and Remote Attestation
+### 11.5 Hardware-Level Enforcement: TEE and Remote Attestation
 
 Modern AI accelerators include **Trusted Execution Environment (TEE)** capabilities through NVIDIA Confidential Computing. This could be repurposed for treaty enforcement: every AI chip cryptographically attests its workload to the CTB, signed by a hardware-embedded key.
 
@@ -520,23 +692,23 @@ Modern AI accelerators include **Trusted Execution Environment (TEE)** capabilit
 
 **Assessment:** TEE-based attestation is the **most technically promising** countermeasure for non-state actors. It should be considered a **medium-term** enforcement mechanism (3-5 years to deploy), requiring cooperation from all major chip manufacturers.
 
-### 10.6 Orchestration Layer Regulation
+### 11.6 Orchestration Layer Regulation
 
 Banning WAN-based distributed training software. **Assessment: Unenforceable and counterproductive.** The knowledge is published, implementation is trivial (~100 lines of PyTorch), and the techniques (federated learning, local SGD) are broadly useful in legitimate applications. Precedent: 1990s encryption export controls failed for similar reasons.
 
-### 10.7 Redefining Model Possession
+### 11.7 Redefining Model Possession
 
 In distributed DiLoCo training, each node holds a complete copy of the model weights. The treaty could redefine possession to include "distributed possession" and "control of orchestration" as violation triggers.
 
 **Assessment:** A **necessary but insufficient** legal clarification. It closes a definitional gap but does nothing to solve the detection problem.
 
-### 10.8 Enhanced Chip Tracking and Physical Inspections
+### 11.8 Enhanced Chip Tracking and Physical Inspections
 
 Strengthened enforcement through: (a) mandatory utilization reporting for all registered AI chips (DiLoCo shows distinctive 100% utilization pattern); (b) random physical inspections of AI chip facilities; (c) enhanced whistleblower programs with financial bounties; (d) power monitoring (though 15-20 kW per sub-CCC node is within normal commercial range).
 
 **Assessment:** Moderately effective and the lowest-collateral enforcement approach. Utilization reporting + whistleblower programs directly increase the cost and risk of prolonged distributed training.
 
-### 10.9 Synthesis: Recommended Treaty Modifications
+### 11.9 Synthesis: Recommended Treaty Modifications
 
 No single countermeasure closes the distributed training loophole. Effectiveness depends critically on the **actor type**:
 
@@ -569,76 +741,3 @@ Note: "Registration Burden" refers to the registration, reporting, and inspectio
 **Recommended package:** (1) 1 TB VRAM threshold; (2) TEE attestation mandate; (3) model possession redefinition; (4) enhanced whistleblower bounties; (5) utilization reporting; (6) consider lowering CCC threshold to 4-8 H100-eq; (7) traffic monitoring (not caps) at GPU facilities.
 
 **The hard truth:** Even with all recommended modifications, the distributed training loophole cannot be fully closed against a determined state actor with domestic chip manufacturing, classified procurement, and sovereign territory. Against such actors, the treaty's enforcement ultimately depends on diplomatic, intelligence, and economic instruments — the same tools used in nuclear nonproliferation, with the same fundamental limitations.
-
-## 11. Compression Quality: Evidence, Extrapolation, and Open Questions
-
-The efficiency model in Section 4.2 includes a compression quality factor that reduces C_local by 2-10% depending on the compression ratio and scenario. This section presents the evidence underlying those estimates, identifies what is validated versus extrapolated, and quantifies the remaining uncertainty.
-
-### 11.1 What the Simulator Assumes
-
-The simulator's compression quality model applies three multiplicative factors to efficiency:
-
-$$\eta = \eta_H \times \eta_{\text{compression}} \times \eta_{\text{replicas}}$$
-
-The sync interval penalty ($\eta_H$) is the dominant term and is well-calibrated against empirical data (DiLoCo Scaling Laws, 2503.09799). The compression quality ($\eta_{\text{compression}}$) and replica penalty ($\eta_{\text{replicas}}$) are estimated from the literature with varying levels of confidence.
-
-**What the simulator does NOT model:**
-- Error feedback (the mechanism for accumulating compression residuals) — whether it is used or needed
-- Interaction effects between compression, replica count, and H
-- Compression-induced outlier accumulation over long training runs
-- The specific choice of compressor (TopK vs random-K, linear vs statistical quantization)
-
-### 11.2 Empirical Evidence by Compression Method
-
-| Paper | Scale | Compression | Quality Impact | Notes |
-|:--|:--|:--|:--|:--|
-| [Streaming DiLoCo](https://arxiv.org/abs/2501.18512) (DeepMind, 2025) | 500M-4B, M=2, H=100 | FP4 (E3M0) pseudo-grads | **None detected** | No error feedback; 400x total bandwidth reduction |
-| [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) (DeepMind, 2025) | 35M-10B, M=1-8 | None (tests H only) | M=8 at 2.4B: +1.2% loss | Penalty decreases with model size |
-| [MuLoCo](https://arxiv.org/abs/2505.23725) (2025) | 150M-15B, K=8-16 | 8-bit, 4-bit, 2-bit | 4-bit: lossless; 2-bit+EF: near-lossless | Error feedback critical at 2-bit |
-| [SparseLoCo](https://arxiv.org/abs/2508.15706) (2025) | 512M-2B, R=8-16 | TopK 3% + 2-bit (~50-100x) | **Beats vanilla DiLoCo** at 3% density | Error feedback essential; regularizing effect |
-| [INTELLECT-1](https://arxiv.org/abs/2412.01152) (Prime Intellect, 2024) | 10B, 14 nodes | int8 pseudo-grads (400x total) | Negligible | Real-world WAN validation |
-| [DiLoCoX](https://arxiv.org/abs/2506.21263) (0G Labs, 2025) | 107B, 20 nodes | Low-rank + int4 | 0.3 loss gap vs AllReduce | First 100B+ DiLoCo experiment |
-| [Deep Gradient Compression](https://arxiv.org/abs/1712.01887) (Lin, 2018) | ResNet-50, DeepSpeech | Up to 600x | Lossless with error feedback | Vision/speech models, not LLMs |
-| [Aragani et al.](https://arxiv.org/abs/2502.07634) (2025) | LSTMs, transformers | TopK/DGC up to 5000x | 50x can improve via regularization; >5000x degrades | |
-
-### 11.3 What Is Validated vs. Extrapolated
-
-**Well-validated (high confidence):**
-- FP4 (4-bit) pseudo-gradient quantization is lossless at up to 4B parameters with H=100 and 2 replicas (Streaming DiLoCo)
-- 4-bit quantization is lossless at up to 15B parameters with 16 replicas (MuLoCo)
-- DiLoCo's efficiency penalty decreases with model size (confirmed 35M-10B, DiLoCo Scaling Laws)
-- int8 compression works in practice over real WAN at 10B (INTELLECT-1)
-
-**Partially validated (medium confidence):**
-- 16x compression (FP4 + 4x sparsification): the FP4 component is well-validated; the sparsification component is tested at 512M (SparseLoCo) but not at 100B+
-- DiLoCo at 100B+ scale: DiLoCoX demonstrates feasibility but shows a 0.3 loss gap versus AllReduce
-
-**Extrapolated (low-medium confidence):**
-- 100x compression at 100B+ scale: only validated at 512M-1B; extrapolation spans ~100x in model size
-- 2000+ replicas: largest empirical test is M=16 (MuLoCo); [Epoch AI projects](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale) that 10,000 nodes would require ~6x FLOP for equivalent quality
-- H=200-2000 combined with aggressive compression: largest tested is H=125 with compression (DiLoCoX at 107B)
-
-### 11.4 Key Risk Factors
-
-**Error feedback:** At 2-bit compression and below, error feedback (accumulating the difference between the original and compressed value for the next sync) is critical for convergence. MuLoCo and SparseLoCo both find that error feedback is essential at aggressive compression ratios. However, the Streaming DiLoCo paper does **not** use error feedback, and its lossless results at FP4 may not extend to more aggressive compression without it. Error feedback adds memory overhead (one full model copy for the error buffer — ~3.8 TB additional for a 240B model) and is not included in the simulator's memory model.
-
-**Compounding unknowns:** The scenarios in Section 8 combine multiple factors that have not been tested jointly: (a) large models (91-240B), (b) many replicas (2,000+), (c) high H values (200-2000), and (d) aggressive compression (100x). Each factor has been studied somewhat independently, but the **interaction** is unknown. Even if each factor individually causes <5% degradation, compounding could produce larger effects.
-
-**Scale-dependent outliers:** Quantization during training is known to cause outlier accumulation over long training runs. At 100B+ scale with trillions of tokens, this could be worse than at 1B scale with billions of tokens. Recent work on FP4 training ([Quartet](https://arxiv.org/abs/2505.14669), 2025) shows that most loss gap arises from forward-pass quantization, not gradient quantization — but this applies to per-step gradients, not DiLoCo pseudo-gradients.
-
-### 11.5 Impact on Analysis Conclusions
-
-| Conclusion | Sensitivity to Compression Quality | Robust? |
-|:--|:--|:--|
-| 4 nodes exceed 10^24 (16x comp) | Low — conservative scenario still gives 9.52e23 | **Yes** |
-| 72 nodes achieve ~17x threshold (16x comp) | Low — range is 17.0-17.9x | **Yes** |
-| 500 nodes achieve 10^26 (16x comp) | Low — conservative gives 1.18e26 | **Yes** |
-| Config F achieves 10^27 (100x comp) | **Medium** — expected 1.07e27, conservative 1.01e27 | **Marginal** |
-| 10^27 at 10 Mbps + 100x (Config F) | **High** — conservative drops to ~9.8e26 | **Uncertain** |
-| Bandwidth reduction costs "only 3-6%" | **Medium** — actual total gap is 12-14% with compression quality | **Revised** |
-| Cost of evasion is $3M for 10^24 | None — cost is hardware, not compression-dependent | **Yes** |
-| Treaty modifications analysis | None — countermeasure effectiveness is independent | **Yes** |
-
-The most important revision is to the bandwidth sensitivity headline: the frequently cited "3-6% reduction" referred only to the $\eta_H$ penalty from larger H values, not the total efficiency gap including compression quality. With compression quality included, the total expected gap between optimal (1 Gbps, no compression penalty) and degraded (10 Mbps, expected compression quality) is **12-14%** for 16x compression and **14-18%** for 100x. The qualitative conclusion — that DiLoCo is robust to bandwidth constraints — remains valid, but the quantitative magnitude is larger.
-
-The core governance conclusions (Sections 6-7) are robust across all compression quality scenarios because they rely on 16x compression, which is well-validated. The 10^27 scenarios (Section 8) carry meaningful uncertainty, particularly Config F's 100x compression assumption, and should be interpreted as estimates with a +-10% error bar rather than precise predictions.

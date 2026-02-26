@@ -400,6 +400,139 @@ where $P_B$ is the model size in billions of parameters and $N$ is the number of
 
 **Limitation:** The formula is calibrated to $M \leq 8$ at 2.4B scale. Extrapolation to $M=2{,}000+$ is weakly supported. The 85% floor is an engineering choice, not a literature-derived bound. At the 100B+ model sizes used in the governance analysis, the replica penalty is negligible (<0.1%) for all scenarios tested.
 
+### 4.8 Activation Compression Quality
+
+When pipeline parallelism is used, activations transmitted between pipeline stages can be compressed to reduce communication volume. This introduces a quality penalty analogous to pseudo-gradient compression but applied to the forward/backward activation tensors.
+
+#### Per-Boundary Quality Table
+
+The simulator defines a lookup table for per-boundary activation compression quality:
+
+| Activation Compression Ratio | Per-Boundary Quality ($q$) | Interpretation |
+|:--|:--|:--|
+| 1x (uncompressed) | 1.000 | No penalty |
+| 2x | $1/0.995 \approx 1.005$ | 0.5% degradation per boundary |
+| 4x (default) | $1/(0.995 \times 0.98) \approx 1.026$ | 2.6% degradation per boundary |
+| 10x | $0.995 \times 0.98 \times 0.95 \approx 0.926$ | 7.4% degradation per boundary |
+
+**Note:** Values at 2x and 4x are defined as reciprocals (quality > 1.0 is inverted internally), while 10x uses a direct product form. The `_interpolate_quality()` helper (shared with `compression_quality()`) log-linearly interpolates between these anchor points.
+
+#### Depth Penalty Formula
+
+Activations cross a pipeline boundary twice per stage transition (forward and backward), and a pipeline with $S$ stages has $(S - 1)$ boundaries. The total activation compression quality is:
+
+$$\eta_{\text{act\_comp}} = q^{\,2(S-1)}$$
+
+where $q$ is the per-boundary quality factor from the table above.
+
+**Example:** With 4x compression and $S = 3$ stages: $\eta_{\text{act\_comp}} = 1.026^{-2(3-1)} \approx 0.90$ (10% quality loss). With $S = 5$ stages: $\eta_{\text{act\_comp}} = 1.026^{-2(5-1)} \approx 0.81$ (19% quality loss).
+
+The depth penalty grows exponentially with pipeline depth, making activation compression increasingly costly for deeply-sharded models.
+
+**Evidence:**
+
+*   Activation compression for pipeline parallelism is less studied than gradient compression. The quality table is an engineering estimate based on:
+*   [Jain et al. (2018)](https://arxiv.org/abs/1712.02679): quantization of intermediate activations for memory savings. 8-bit activations are near-lossless; 4-bit incurs measurable but small degradation.
+*   [Evans et al. (2021)](https://arxiv.org/abs/2104.04473): activation compression in distributed inference. 2x compression is generally lossless; higher ratios degrade proportionally.
+*   The exponential depth scaling ($q^{2(S-1)}$) follows from the assumption that compression errors at each boundary are independent and multiplicative. This is a worst-case model; in practice, error cancellation across boundaries may reduce the effective penalty.
+
+**Default:** `PP_COMPRESSION = 4` (4x activation compression ratio), `MICRO_BATCHES = 8`.
+
+### 4.9 Chinchilla-Optimality Model
+
+The simulator evaluates each scenario not just by raw FLOP throughput but by the quality-adjusted compute: how much of the compute budget produces a model that is optimally sized according to scaling laws.
+
+#### Chinchilla Loss Function
+
+The parametric loss function from [Besiroglu et al. (2024)](https://arxiv.org/abs/2404.10102), which refits the Chinchilla scaling law with updated data:
+
+$$L(N, D) = 1.8172 + \frac{482.01}{N^{0.3478}} + \frac{2085.43}{D^{0.3658}}$$
+
+where $N$ = model parameters and $D$ = training tokens.
+
+#### Optimal Allocation Rule
+
+Given a compute budget $C = 6ND$, the Chinchilla-optimal allocation is:
+
+$$D^* = 25.6 \times N$$
+
+This yields `chinchilla_optimal_allocation(c_flop)` which returns $(N_{\text{opt}}, D_{\text{opt}})$ by solving:
+
+$$C = 6 \cdot N \cdot (25.6 \cdot N) = 153.6 \cdot N^2$$
+
+$$N_{\text{opt}} = \sqrt{\frac{C}{153.6}}, \quad D_{\text{opt}} = 25.6 \cdot N_{\text{opt}}$$
+
+**Evidence:**
+
+*   The original Chinchilla paper [Hoffmann et al. (2022)](https://arxiv.org/abs/2203.15556) estimated $D^* \approx 20N$. [Besiroglu et al. (2024)](https://arxiv.org/abs/2404.10102) revisited this with additional data and corrected methodology, finding $D^* \approx 25.6N$. The simulator uses the updated value.
+*   The `CHINCHILLA_TOKENS_PER_PARAM = 25.6` constant encodes this ratio.
+
+#### Chinchilla Efficiency Metric
+
+For a given scenario with local compute $C_{\text{local}} = C_{\text{raw}} \times \eta$, the simulator computes the Chinchilla efficiency $\eta_{\text{chinchilla}}$ via binary search:
+
+1.  Compute $L_{\text{optimal}} = L(N_{\text{opt}}, D_{\text{opt}})$ where $(N_{\text{opt}}, D_{\text{opt}})$ = `chinchilla_optimal_allocation(C_local)`.
+2.  Find the *actual* loss $L_{\text{actual}} = L(N_{\text{actual}}, D_{\text{actual}})$ for the scenario's model size and token count.
+3.  Binary-search for the compute budget $C'$ such that $L(N'_{\text{opt}}, D'_{\text{opt}}) = L_{\text{actual}}$, where $(N'_{\text{opt}}, D'_{\text{opt}})$ is the Chinchilla-optimal allocation at $C'$.
+4.  The Chinchilla efficiency is $\eta_{\text{chinchilla}} = C' / C_{\text{local}}$.
+
+This gives the fraction of local compute that is "useful" after accounting for sub-optimal model sizing. A scenario that trains a model 3x larger than Chinchilla-optimal (undertrained) will have $\eta_{\text{chinchilla}} < 1$.
+
+#### Quality-Adjusted Compute
+
+All scenario functions now return:
+
+$$C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$$
+
+This is the headline metric for comparing scenarios: it captures both hardware utilization *and* scaling-law optimality. Two scenarios with the same $C_{\text{local}}$ but different model sizes will have different $C_{\text{quality}}$ values, with the one closer to Chinchilla-optimal sizing being superior.
+
+**Limitation:** The Chinchilla loss function is fit to dense transformer models in the 70M-16B range. Extrapolation to 100B+ models, MoE architectures, or non-standard training recipes (e.g., heavy data repetition) may not be accurate. The $D^* = 25.6N$ rule assumes IID data — with finite data and repetition, the optimal ratio shifts. See Section 10 for further caveats.
+
+### 4.10 PP-Group DiLoCo: Pipeline Interconnect and Model Size Sweep
+
+#### PP Interconnect Parameters
+
+When PP-Group DiLoCo is used with hierarchical mode, the nodes within each PP group are assumed to be co-located in the same region and connected via regional interconnect:
+
+| Parameter | Value | Rationale |
+|:--|:--|:--|
+| `PP_BW_BPS` | $10^9$ bps (1 Gbps) | Regional datacenter or metro-area interconnect |
+| `PP_LATENCY_S` | 0.020 s (20 ms) | Regional round-trip latency |
+
+These are identical to the hierarchical DiLoCo regional parameters, reflecting the assumption that PP groups are formed from co-located nodes.
+
+#### GPipe Bubble Formula (PP-Group DiLoCo)
+
+The per-step time for each PP group follows the standard GPipe formula:
+
+$$T_{\text{PP\_step}} = (M + S - 1) \times \left(T_{\text{micro\_comp}} + (T_{\text{micro\_comm}} + \text{Lat}_{\text{PP}}) \times f_{\text{straggler}}(S)\right)$$
+
+where:
+*   $M$ = `MICRO_BATCHES` (default 8)
+*   $S$ = pipeline stages = $\lceil M_{\text{req}} / \text{VRAM} \rceil$
+*   $T_{\text{micro\_comp}}$ = compute time for one micro-batch on one stage
+*   $T_{\text{micro\_comm}}$ = activation transfer time for one micro-batch across one boundary
+*   $\text{Lat}_{\text{PP}}$ = `PP_LATENCY_S` (20 ms)
+*   $f_{\text{straggler}}(S)$ = straggler factor for $S$ nodes in the PP group
+
+#### Target Model Size Parameter
+
+`compute_scenario()` now accepts an optional `target_params_b` parameter that overrides the default model size. This enables the model size sweep to evaluate the same hardware configuration across different model sizes, finding the optimal balance between model capacity and Chinchilla efficiency.
+
+#### Model Size Sweep
+
+The `sweep_model_sizes()` function evaluates both DiLoCo and PP-DiLoCo at a range of model sizes for a given hardware configuration. For each candidate size:
+
+1.  If the model fits in single-node VRAM: evaluate as DiLoCo (Mode A).
+2.  If the model requires sharding: evaluate as PP-Group DiLoCo (Mode C).
+3.  Compute $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$ for each.
+
+The sweep identifies the model size that maximizes $C_{\text{quality}}$, which balances:
+*   **Larger models:** higher capacity but undertrained relative to Chinchilla ($\eta_{\text{chinchilla}} < 1$) and may require PP (reducing throughput).
+*   **Smaller models:** better Chinchilla fit and no PP overhead, but lower total capability.
+
+`print_model_size_sweep()` formats the sweep results showing model size, mode (DiLoCo vs PP-DiLoCo), $\eta$, $C_{\text{local}}$, $\eta_{\text{chinchilla}}$, and $C_{\text{quality}}$ for each candidate.
+
 ---
 
 ## 5. Straggler & Congestion Model
@@ -514,7 +647,7 @@ On top of precision, the user can apply further compression via quantization and
 | `innerSteps` | Integer | 128 | Local SGD steps between synchronizations. |
 | `compression` | Factor | 16× | Pseudo-gradient compression ratio. |
 | `localBatch` | Tokens | 131,072 | Tokens per local training step (= num\_sequences × seq\_length). |
-| `microBatches` | Integer | 8 | Micro-batches for pipeline parallelism. |
+| `microBatches` | Integer | 8 | Number of micro-batches for pipeline parallelism (GPipe schedule). |
 | `precision` | Enum | FP16 | Compute precision (FP16, FP8, FP4). |
 | `streamingEnabled` | Boolean | true | Overlap communication with compute. |
 | `nodesPerGroup` | Integer | 8 | Nodes per regional cluster (hierarchical mode). |
@@ -522,6 +655,10 @@ On top of precision, the user can apply further compression via quantization and
 | `regionalLatency` | ms | 20 | Intra-group round-trip time. |
 | `regionalSteps` | Integer | 16 | Regional sync cycles per global sync. |
 | `compressionScenario` | Enum | expected | Compression quality uncertainty level (optimistic, expected, conservative). |
+| `ppCompression` | Factor | 4x | Activation compression ratio for pipeline parallelism boundaries (see Section 4.8). |
+| `chinchillaTokensPerParam` | Float | 25.6 | Chinchilla-optimal tokens-per-parameter ratio ($D^*/N$). From Besiroglu et al. (2024). |
+| `PP_BW_BPS` | bps | $10^9$ (1 Gbps) | Bandwidth for intra-group PP communication (regional interconnect). |
+| `PP_LATENCY_S` | seconds | 0.020 (20 ms) | Round-trip latency for intra-group PP communication (regional interconnect). |
 
 ---
 
@@ -537,6 +674,8 @@ On top of precision, the user can apply further compression via quantization and
 8.  **Compression quality factors are extrapolations.** The $\eta_{\text{compression}}$ values at 16× and 100× are engineering estimates based on experiments at 512M–15B parameters (see §4.6). No published experiment has measured compression quality degradation at the 100B+ scale the simulator targets. The three-scenario approach (optimistic/expected/conservative) is designed to bound this uncertainty rather than resolve it.
 9.  **Replica penalty is weakly calibrated.** The $\eta_{\text{replicas}}$ formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. At the 100B+ scale used in the governance analysis, the penalty is negligible, but it could be significant at small model sizes with many replicas — a regime not targeted by this analysis.
 10. **Compression quality and H are modeled as independent.** The three efficiency components ($\eta_H$, $\eta_{\text{compression}}$, $\eta_{\text{replicas}}$) are multiplied independently. In reality, larger H produces more divergent pseudo-gradients that may be harder to compress (negative interaction) or may have lower effective rank that compresses better (positive interaction). This interaction is not modeled.
+11. **Activation compression depth risk.** The activation compression quality model (Section 4.8) assumes independent, multiplicative errors at each pipeline boundary, yielding an exponential depth penalty $q^{2(S-1)}$. In practice, errors may correlate across boundaries (e.g., systematic quantization bias in certain feature dimensions), making the penalty either better or worse than the independent-error model predicts. For deep pipelines ($S \geq 5$), the compounded penalty exceeds 19% at 4x compression, which may be optimistic if errors are correlated or pessimistic if error cancellation occurs. No published work validates activation compression quality across multiple sequential pipeline boundaries.
+12. **Chinchilla scaling law extrapolation.** The Chinchilla loss function $L(N,D)$ from Besiroglu et al. (2024) is fit to dense transformer models in the 70M-16B parameter range. The simulator extrapolates this to 100B-1T scale models, MoE architectures, and non-standard training regimes (e.g., 3x Chinchilla overtraining). The $D^* = 25.6N$ optimal ratio assumes IID training data; with finite datasets and data repetition, the effective optimal ratio shifts downward. Additionally, the Chinchilla efficiency metric $\eta_{\text{chinchilla}}$ uses binary search to match loss curves, which assumes the loss function is monotonically well-behaved at extrapolated scales. Results at the extremes of the model size sweep (e.g., 960B dense models) should be interpreted with particular caution.
 
 ---
 

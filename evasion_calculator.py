@@ -187,35 +187,62 @@ def alpha(params_billion):
     return 0.08 / (1.0 + log_p / 5.0)
 
 
-def compression_quality(compression_ratio, scenario=None):
-    """Multiplicative quality factor for gradient compression.
-    Interpolates log-linearly between known compression thresholds."""
+def _interpolate_quality(table, ratio, scenario=None):
+    """Log-linear interpolation in a quality table keyed by compression ratio.
+    Shared helper for pseudo-gradient and activation compression quality."""
     if scenario is None:
         scenario = DEFAULT_SCENARIO
-    if compression_ratio <= 1:
+    if ratio <= 1:
         return 1.0
-    # Known thresholds
-    thresholds = sorted(COMPRESSION_QUALITY.keys())
-    # Exact match
-    if compression_ratio in COMPRESSION_QUALITY:
-        return COMPRESSION_QUALITY[compression_ratio][scenario]
-    # Log-linear interpolation
-    log_cr = math.log10(compression_ratio)
+    thresholds = sorted(table.keys())
+    if ratio in table:
+        return table[ratio][scenario]
+    log_r = math.log10(ratio)
     for i in range(len(thresholds) - 1):
         lo, hi = thresholds[i], thresholds[i + 1]
-        if lo <= compression_ratio <= hi:
-            if lo <= 1:
-                lo_log = 0
-            else:
-                lo_log = math.log10(lo)
+        if lo <= ratio <= hi:
+            lo_log = 0 if lo <= 1 else math.log10(lo)
             hi_log = math.log10(hi)
-            t = (log_cr - lo_log) / (hi_log - lo_log) if hi_log > lo_log else 0
-            q_lo = COMPRESSION_QUALITY[lo][scenario]
-            q_hi = COMPRESSION_QUALITY[hi][scenario]
-            return q_lo + t * (q_hi - q_lo)
-    # Above max threshold: extrapolate from last two
-    lo, hi = thresholds[-2], thresholds[-1]
-    return COMPRESSION_QUALITY[hi][scenario]
+            t = (log_r - lo_log) / (hi_log - lo_log) if hi_log > lo_log else 0
+            return table[lo][scenario] + t * (table[hi][scenario] - table[lo][scenario])
+    return table[thresholds[-1]][scenario]
+
+
+def compression_quality(compression_ratio, scenario=None):
+    """Multiplicative quality factor for pseudo-gradient compression."""
+    return _interpolate_quality(COMPRESSION_QUALITY, compression_ratio, scenario)
+
+
+# ── Activation compression quality model ─────────────────────────────────────
+# Per-stage-boundary quality factor for activation compression in PP mode.
+# Unlike pseudo-gradient errors (which average across replicas), activation
+# errors accumulate through the pipeline (forward + backward passes).
+# Literature:
+#   - FP8 (2x): universally near-lossless (COAT ICLR 2025; SWARM ICML 2023)
+#   - 4-bit adaptive (4x): near-lossless (TAH-Quant 2025; GACT ICML 2022)
+#   - 10-16x: structural methods needed; Protocol Models 2025: 100x lossless
+#     at 8B via subspace decomposition, but not validated at 100B+
+ACTIVATION_COMPRESSION_QUALITY = {
+    1:   {"optimistic": 1.00, "expected": 1.00, "conservative": 1.00},
+    2:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.995},
+    4:   {"optimistic": 1.00, "expected": 0.995, "conservative": 0.98},
+    10:  {"optimistic": 0.995, "expected": 0.98, "conservative": 0.95},
+}
+
+PP_COMPRESSION = 4      # Default: 4-bit activation quantization (well-validated)
+MICRO_BATCHES = 8       # GPipe micro-batch count
+
+
+def activation_compression_quality(pp_compression, pp_stages, scenario=None):
+    """Quality factor for activation compression in PP mode.
+    Errors compound at each stage boundary: 2*(S-1) boundaries (fwd + bwd).
+    Returns per_boundary_quality ** (2*(S-1))."""
+    if pp_compression <= 1 or pp_stages <= 1:
+        return 1.0
+    per_boundary = _interpolate_quality(ACTIVATION_COMPRESSION_QUALITY,
+                                         pp_compression, scenario)
+    n_boundaries = 2 * (pp_stages - 1)
+    return per_boundary ** n_boundaries
 
 
 def replica_penalty(n_replicas, params_billion):
@@ -229,6 +256,56 @@ def replica_penalty(n_replicas, params_billion):
     scale_adj = min(2.4, params_billion) / max(params_billion, 0.1)
     penalty = base_per_doubling * scale_adj * math.log2(n_replicas)
     return max(0.85, 1.0 - penalty)
+
+
+# ── Chinchilla scaling law (corrected) ────────────────────────────────────────
+# Besiroglu et al. 2024, "Chinchilla Scaling: A Replication Attempt"
+# (arXiv:2404.10102). Corrects Hoffmann et al. 2022 Approach 3 parameters.
+# L(N,D) = E + A/N^alpha + B/D^beta
+# Optimal ratio D* = 25.6*N (including outliers).
+
+CHINCHILLA_TOKENS_PER_PARAM = 25.6
+
+_CHIN_E = 1.8172
+_CHIN_A = 482.01
+_CHIN_ALPHA = 0.3478
+_CHIN_B = 2085.43
+_CHIN_BETA = 0.3658
+
+
+def chinchilla_loss(params, tokens):
+    """Predicted loss for N parameters trained on D tokens.
+    params and tokens in raw counts (not billions/trillions)."""
+    if params <= 0 or tokens <= 0:
+        return float('inf')
+    return _CHIN_E + _CHIN_A * params**(-_CHIN_ALPHA) + _CHIN_B * tokens**(-_CHIN_BETA)
+
+
+def chinchilla_optimal_allocation(c_flop):
+    """Given total compute C = 6*N*D, find (N_opt, D_opt) minimizing loss.
+    With D* = 25.6*N: C = 6*N*25.6*N = 153.6*N^2."""
+    n_opt = math.sqrt(c_flop / (6 * CHINCHILLA_TOKENS_PER_PARAM))
+    d_opt = CHINCHILLA_TOKENS_PER_PARAM * n_opt
+    return n_opt, d_opt
+
+
+def chinchilla_efficiency(params, tokens, c_flop):
+    """Fraction of compute that is 'effective' vs Chinchilla-optimal allocation.
+    Returns eta_chinchilla in [0, 1]. At optimal allocation returns ~1.0.
+    Method: binary search for C' such that L_opt(C') = L(params, tokens)."""
+    l_actual = chinchilla_loss(params, tokens)
+    # Find C_effective: compute needed at Chinchilla-optimal to reach same loss
+    lo, hi = 1e10, c_flop * 10  # search up to 10x current compute
+    for _ in range(200):
+        mid = math.sqrt(lo * hi)  # geometric bisection
+        n_mid, d_mid = chinchilla_optimal_allocation(mid)
+        l_mid = chinchilla_loss(n_mid, d_mid)
+        if l_mid > l_actual:
+            lo = mid
+        else:
+            hi = mid
+    c_effective = math.sqrt(lo * hi)
+    return min(1.0, c_effective / c_flop)
 
 
 def efficiency(h, params_billion, compression_ratio=1, scenario=None, n_replicas=1):
@@ -247,8 +324,11 @@ def efficiency(h, params_billion, compression_ratio=1, scenario=None, n_replicas
 def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                      time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                      bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                     bw_bps=None, latency_s=None, scenario=None):
-    """Compute all metrics for a given node configuration and node count."""
+                     bw_bps=None, latency_s=None, scenario=None,
+                     target_params_b=None):
+    """Compute all metrics for a given node configuration and node count.
+    If target_params_b is specified, train that model size instead of max-VRAM.
+    The model must fit on a single node (no PP)."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
     else:
@@ -268,7 +348,12 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     # Max dense model size
     max_params_b = vram_gb / bytes_per_param  # billions of params
-    params_b = max_params_b  # Train the largest model that fits
+    if target_params_b is not None:
+        assert target_params_b <= max_params_b, \
+            f"target_params_b={target_params_b}B exceeds max {max_params_b:.0f}B for {config_name}"
+        params_b = target_params_b
+    else:
+        params_b = max_params_b  # Train the largest model that fits
     params = params_b * 1e9
 
     # Effective FLOPS
@@ -304,8 +389,12 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     # Training details
     total_tokens = c_actual / (6 * params)
-    chinchilla_tokens = 20 * params
+    chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
+
+    # Chinchilla-optimality efficiency
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    c_quality = c_local * eta_chin
 
     # Cost
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
@@ -322,6 +411,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "pflops_per_node": pflops,
         "vram_gb": vram_gb,
         "max_params_b": max_params_b,
+        "params_b": params_b,
         "t_comp": t_comp,
         "t_sync_base": t_sync_base,
         "f_straggler": f_n,
@@ -331,6 +421,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "eta": eta,
         "c_actual": c_actual,
         "c_local": c_local,
+        "eta_chinchilla": eta_chin,
+        "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "chinchilla_tokens_T": chinchilla_tokens / 1e12,
         "overtraining_ratio": overtraining_ratio,
@@ -419,8 +511,12 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
     # Training details
     total_tokens = c_actual / (6 * params)
-    chinchilla_tokens = 20 * params
+    chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
+
+    # Chinchilla-optimality efficiency
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual)
+    c_quality = c_local * eta_chin
 
     # Cost
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
@@ -435,6 +531,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
         "pflops_per_node": pflops,
         "vram_gb": vram_gb,
         "max_params_b": max_params_b,
+        "params_b": params_b,
         "t_comp": t_comp,
         "t_regional_sync": t_regional_sync,
         "t_global_sync": t_global_sync,
@@ -447,6 +544,8 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
         "eta": eta,
         "c_actual": c_actual,
         "c_local": c_local,
+        "eta_chinchilla": eta_chin,
+        "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "chinchilla_tokens_T": chinchilla_tokens / 1e12,
         "overtraining_ratio": overtraining_ratio,
@@ -517,8 +616,12 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
 
     # Training details (based on active params)
     total_tokens = c_actual / (6 * params_active)
-    chinchilla_tokens_active = 20 * params_active
+    chinchilla_tokens_active = CHINCHILLA_TOKENS_PER_PARAM * params_active
     overtraining_ratio = total_tokens / chinchilla_tokens_active
+
+    # Chinchilla-optimality (based on active params, since that determines quality)
+    eta_chin = chinchilla_efficiency(params_active, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    c_quality = c_local * eta_chin
 
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
@@ -528,6 +631,7 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
         "total_gpus": n_nodes * cfg["gpu_count"],
         "total_params_b": total_params_b,
         "active_params_b": active_params_b,
+        "params_b": active_params_b,
         "mem_node_gb": mem_node_gb,
         "vram_gb": vram_gb,
         "fits_on_node": fits,
@@ -540,11 +644,262 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
         "eta": eta,
         "c_actual": c_actual,
         "c_local": c_local,
+        "eta_chinchilla": eta_chin,
+        "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "overtraining_ratio": overtraining_ratio,
         "cost_usd": cost_usd,
         "strict_threshold_multiple": c_local / 1e24,
     }
+
+
+# ── PP-Group DiLoCo ───────────────────────────────────────────────────────────
+
+# PP groups co-locate within a region — better bandwidth/latency than WAN
+PP_BW_BPS = 1e9         # 1 Gbps (regional interconnect)
+PP_LATENCY_S = 0.020    # 20 ms (same-continent latency)
+
+
+def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
+                                pp_compression=PP_COMPRESSION,
+                                micro_batches=MICRO_BATCHES,
+                                compression=COMPRESSION,
+                                bytes_per_param=BYTES_PER_PARAM,
+                                bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                                time_seconds=None, bw_bps=None, latency_s=None,
+                                pp_bw_bps=None, pp_latency_s=None,
+                                scenario=None):
+    """PP-Group DiLoCo: pipeline parallelism within co-located groups,
+    DiLoCo synchronization across groups over WAN.
+
+    Allows training models larger than single-node VRAM by sharding across
+    pipeline stages. Each group of S co-located nodes holds the full model;
+    G = N//S groups run DiLoCo outer loop.
+
+    Returns None if insufficient nodes to form at least 2 groups."""
+    if config_name in CONFIGS:
+        cfg = CONFIGS[config_name]
+    else:
+        cfg = CONFIGS_FP8[config_name]
+        bytes_per_param = cfg["bytes_per_param"]
+        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+
+    if time_seconds is None:
+        time_seconds = TIME_SECONDS
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    if latency_s is None:
+        latency_s = LATENCY_S
+    if pp_bw_bps is None:
+        pp_bw_bps = PP_BW_BPS
+    if pp_latency_s is None:
+        pp_latency_s = PP_LATENCY_S
+
+    pflops = cfg["pflops"]
+    vram_gb = cfg["vram_gb"]
+
+    # Pipeline stages needed
+    mem_bytes = target_params_b * 1e9 * bytes_per_param
+    pp_stages = math.ceil(mem_bytes / (vram_gb * 1e9))
+    if pp_stages <= 1:
+        # Model fits on one node — use regular DiLoCo instead
+        return None
+
+    # Groups
+    n_groups = n_nodes // pp_stages
+    if n_groups < 2:
+        return None  # Not enough nodes for DiLoCo across groups
+
+    params = target_params_b * 1e9
+    bytes_per_value = bytes_per_param / 8  # approximate: FP16=2, FP8=1.75, FP4=1.625
+
+    # Compute time: each stage processes 1/S of the model for all micro-batches
+    effective_flops = pflops * 1e15 * MFU
+    flops_per_step = 6 * params * LOCAL_BATCH
+    # Wall-clock time for one node to compute the full model (no PP)
+    compute_per_step_full = flops_per_step / effective_flops
+    # In GPipe, each pipeline "tick" = one stage processing one micro-batch
+    # Per-stage compute = full_model / S; per-micro = that / M
+    compute_per_micro = compute_per_step_full / (pp_stages * micro_batches)
+
+    # Hidden dimension approximation (for activation size)
+    hidden_dim = 0.03 * math.sqrt(params)
+
+    # Activation bits per step (forward pass activation tensor at stage boundary)
+    # Shape: [local_batch, hidden_dim] in the given precision, compressed by pp_compression
+    precision_bytes = 2 if bytes_per_param >= 16 else (1 if bytes_per_param >= 14 else 0.5)
+    activation_bits = (LOCAL_BATCH * hidden_dim * precision_bytes * 8) / pp_compression
+
+    # PP communication time per micro-batch (activation transfer between stages)
+    comm_per_micro = (2 * activation_bits / micro_batches) / pp_bw_bps
+
+    # GPipe bubble formula: (M + S - 1) micro-steps
+    pp_straggler = straggler_factor(pp_stages)
+    pp_step_time = (micro_batches + pp_stages - 1) * (
+        compute_per_micro + (comm_per_micro + pp_latency_s) * pp_straggler
+    )
+
+    # DiLoCo sync across groups (pseudo-gradients over WAN)
+    v_bits = params * bits_per_pseudo_grad / compression
+    f_n = straggler_factor(n_groups)
+    t_sync_base = 2 * v_bits / bw_bps + latency_s
+    t_sync = t_sync_base * f_n
+
+    # Minimum H (inner steps before DiLoCo sync)
+    h_min = max(1, math.ceil(t_sync / pp_step_time))
+
+    # Efficiency components
+    eta_h_c_r = efficiency(h_min, target_params_b, compression_ratio=compression,
+                           scenario=scenario, n_replicas=n_groups)
+    eta_act = activation_compression_quality(pp_compression, pp_stages, scenario)
+    eta = eta_h_c_r * eta_act
+
+    # PP bubble overhead (fraction of time in bubble)
+    bubble_frac = (pp_stages - 1) / (micro_batches + pp_stages - 1)
+
+    # Tokens and compute (wall-clock based)
+    # One outer step = max(H * pp_step_time, t_sync) with streaming
+    outer_step_time = max(h_min * pp_step_time, t_sync)
+    n_outer_steps = time_seconds / outer_step_time
+    total_tokens = n_outer_steps * h_min * LOCAL_BATCH * n_groups
+
+    c_actual = 6 * params * total_tokens
+    c_local = c_actual * eta
+
+    # Chinchilla-optimality
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_groups > 1 else 1.0
+    c_quality = c_local * eta_chin
+
+    # Overtraining
+    chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
+    overtraining_ratio = total_tokens / chinchilla_tokens
+
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+
+    return {
+        "config": config_name + f" (PP-DiLoCo {pp_stages}x{n_groups})",
+        "mode": f"PP-Group DiLoCo ({pp_stages} stages x {n_groups} groups)",
+        "n_nodes": n_nodes,
+        "total_gpus": n_nodes * cfg["gpu_count"],
+        "params_b": target_params_b,
+        "pp_stages": pp_stages,
+        "n_groups": n_groups,
+        "pp_step_time": pp_step_time,
+        "bubble_frac": bubble_frac,
+        "t_sync": t_sync,
+        "f_straggler": f_n,
+        "h_min": h_min,
+        "eta_h_c_r": eta_h_c_r,
+        "eta_activation": eta_act,
+        "eta": eta,
+        "eta_chinchilla": eta_chin,
+        "c_actual": c_actual,
+        "c_local": c_local,
+        "c_quality": c_quality,
+        "total_tokens_T": total_tokens / 1e12,
+        "chinchilla_tokens_T": chinchilla_tokens / 1e12,
+        "overtraining_ratio": overtraining_ratio,
+        "cost_usd": cost_usd,
+        "strict_threshold_multiple": c_local / 1e24,
+        "pp_compression": pp_compression,
+        "compression": compression,
+    }
+
+
+# ── Model size sweep ──────────────────────────────────────────────────────────
+
+def sweep_model_sizes(config_name, n_nodes, compression=COMPRESSION,
+                      scenario=None, time_seconds=None):
+    """Evaluate multiple model sizes and return all results.
+    Includes DiLoCo candidates (fit on one node) and PP-DiLoCo candidates
+    (require pipeline parallelism). Returns list of result dicts sorted by
+    C_quality descending."""
+    if config_name in CONFIGS:
+        cfg = CONFIGS[config_name]
+        bytes_per_param = BYTES_PER_PARAM
+    else:
+        cfg = CONFIGS_FP8[config_name]
+        bytes_per_param = cfg["bytes_per_param"]
+
+    max_single_b = cfg["vram_gb"] / bytes_per_param
+    results = []
+
+    # DiLoCo candidates: various fractions of max single-node model
+    for frac in [0.25, 0.50, 0.75, 1.0]:
+        target = frac * max_single_b
+        try:
+            r = compute_scenario(config_name, n_nodes, compression=compression,
+                                 scenario=scenario, time_seconds=time_seconds,
+                                 target_params_b=target)
+            r["mode_type"] = "DiLoCo"
+            r["pp_stages"] = 1
+            r["n_groups"] = n_nodes
+            r["bubble_frac"] = 0.0
+            r["eta_activation"] = 1.0
+            results.append(r)
+        except Exception:
+            pass
+
+    # PP-DiLoCo candidates: models larger than single-node VRAM
+    for mult in [1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]:
+        target = mult * max_single_b
+        r = compute_pp_diloco_scenario(config_name, n_nodes,
+                                        target_params_b=target,
+                                        compression=compression,
+                                        scenario=scenario,
+                                        time_seconds=time_seconds)
+        if r:
+            r["mode_type"] = "PP-DiLoCo"
+            results.append(r)
+
+    # Sort by C_quality descending
+    results.sort(key=lambda x: x.get("c_quality", 0), reverse=True)
+    return results
+
+
+def print_model_size_sweep(config_name, n_nodes, compression=COMPRESSION,
+                           scenario=None):
+    """Print a model size optimization table for given config and node count."""
+    if config_name in CONFIGS:
+        cfg = CONFIGS[config_name]
+        bytes_per_param = BYTES_PER_PARAM
+    else:
+        cfg = CONFIGS_FP8[config_name]
+        bytes_per_param = cfg["bytes_per_param"]
+
+    max_b = cfg["vram_gb"] / bytes_per_param
+    c_budget = n_nodes * cfg["pflops"] * 1e15 * MFU * TIME_SECONDS
+    n_opt, d_opt = chinchilla_optimal_allocation(c_budget)
+
+    print(f"\n--- {n_nodes} nodes, {config_name} (Chinchilla-optimal: ~{n_opt/1e9:.0f}B, max single-node: {max_b:.0f}B) ---")
+    print(f"\n  {'Mode':>12} | {'Model':>7} | {'PP':>2} | {'Groups':>6} | {'OT':>6} | "
+          f"{'eta':>5} | {'eta_act':>7} | {'eta_chin':>8} | {'C_local':>10} | {'C_quality':>10}")
+    print("  " + "-" * 105)
+
+    results = sweep_model_sizes(config_name, n_nodes, compression=compression,
+                                scenario=scenario)
+    best = results[0] if results else None
+
+    for r in results:
+        mode = r.get("mode_type", "DiLoCo")
+        model_str = f"{r['params_b']:.0f}B"
+        pp = r.get("pp_stages", 1)
+        groups = r.get("n_groups", n_nodes)
+        ot = r.get("overtraining_ratio", 0)
+        eta = r.get("eta", 0)
+        eta_act = r.get("eta_activation", 1.0)
+        eta_chin = r.get("eta_chinchilla", 1.0)
+        c_local = r.get("c_local", 0)
+        c_quality = r.get("c_quality", 0)
+        marker = " *" if r is best else ""
+
+        print(f"  {mode:>12} | {model_str:>7} | {pp:>2} | {groups:>6} | {ot:>5.1f}x | "
+              f"{eta:>5.3f} | {eta_act:>7.3f} | {eta_chin:>8.3f} | {c_local:>10.2e} | "
+              f"{c_quality:>10.2e}{marker}")
+
+    if best:
+        print(f"\n  * Best quality-adjusted compute: {best['params_b']:.0f}B "
+              f"({best.get('mode_type', 'DiLoCo')}), C_quality = {best['c_quality']:.2e}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -564,8 +919,8 @@ def print_config_summary(config_name):
 def print_results_table(config_name):
     print(f"\n{'N':>5} | {'GPUs':>7} | {'Cost':>8} | {'f(N)':>5} | {'H_min':>5} | "
           f"{'eta':>5} | {'C_local':>10} | {'x10^24':>7} | {'Model':>6} | "
-          f"{'Tokens':>7} | {'OT ratio':>8}")
-    print("-" * 105)
+          f"{'Tokens':>7} | {'OT ratio':>8} | {'eta_chin':>8} | {'C_quality':>10}")
+    print("-" * 135)
 
     for n in NODE_COUNTS:
         r = compute_scenario(config_name, n)
@@ -575,10 +930,12 @@ def print_results_table(config_name):
         model_str = f"{r['max_params_b']:.0f}B"
         tokens_str = f"{r['total_tokens_T']:.1f}T"
         ot_str = f"{r['overtraining_ratio']:.1f}x"
+        echin_str = f"{r['eta_chinchilla']:.3f}"
+        cq_str = f"{r['c_quality']:.2e}"
 
         print(f"{n:>5} | {r['total_gpus']:>7,} | {cost_str:>8} | {r['f_straggler']:>5.3f} | "
               f"{r['h_min']:>5} | {r['eta']:>5.3f} | {c_str:>10} | {mult_str:>7} | "
-              f"{model_str:>6} | {tokens_str:>7} | {ot_str:>8}")
+              f"{model_str:>6} | {tokens_str:>7} | {ot_str:>8} | {echin_str:>8} | {cq_str:>10}")
 
 
 def print_detailed(config_name, n_nodes):
@@ -680,9 +1037,20 @@ def print_10e27_comparison():
                                   active_params_b=100)
     scenarios.append(("G: MoE+EP 600B/100B, A100", rG))
 
+    # H: PP-Group DiLoCo, 48x A100, 960B (optimal from sweep)
+    rH = compute_pp_diloco_scenario("48x A100 80GB", 4000, target_params_b=960)
+    if rH:
+        scenarios.append(("H: PP-DiLoCo 960B, A100", rH))
+
+    # I: PP-Group DiLoCo, H100 FP8, 480B
+    rI = compute_pp_diloco_scenario("16x H100 FP8", 2000, target_params_b=480)
+    if rI:
+        scenarios.append(("I: PP-DiLoCo 480B, H100 FP8", rI))
+
     print(f"\n{'Config':>35} | {'Nodes':>5} | {'GPUs':>7} | {'Cost':>8} | "
-          f"{'Model':>18} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7}")
-    print("-" * 115)
+          f"{'Model':>18} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7} | "
+          f"{'eta_chin':>8} | {'C_quality':>10}")
+    print("-" * 145)
 
     for label, r in scenarios:
         cost = r['cost_usd']
@@ -691,12 +1059,16 @@ def print_10e27_comparison():
         mult_str = f"{r['strict_threshold_multiple']:.0f}x"
         if 'total_params_b' in r:
             model_str = f"{r['total_params_b']:.0f}B MoE ({r['active_params_b']:.0f}B act)"
+        elif r.get('pp_stages', 1) > 1:
+            model_str = f"{r['params_b']:.0f}B PP-{r['pp_stages']}x{r['n_groups']}"
         else:
-            model_str = f"{r['max_params_b']:.0f}B dense"
+            model_str = f"{r.get('max_params_b', r.get('params_b', 0)):.0f}B dense"
+        echin = r.get('eta_chinchilla', 1.0)
+        cq = r.get('c_quality', r['c_local'])
 
         print(f"{label:>35} | {r['n_nodes']:>5} | {r['total_gpus']:>7,} | "
               f"{cost_str:>8} | {model_str:>18} | {r['eta']:>5.3f} | "
-              f"{c_str:>10} | {mult_str:>7}")
+              f"{c_str:>10} | {mult_str:>7} | {echin:>8.3f} | {cq:>10.2e}")
 
 
 # ── Network sensitivity parameters ───────────────────────────────────────────
@@ -897,6 +1269,16 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
     c_actual = n_nodes * effective_flops * time_seconds
     c_local = c_actual * eta
+
+    # Training details
+    total_tokens = c_actual / (6 * params)
+    chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
+    overtraining_ratio = total_tokens / chinchilla_tokens
+
+    # Chinchilla-optimality efficiency
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    c_quality = c_local * eta_chin
+
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
     return {
@@ -905,9 +1287,14 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         "pflops_per_node": pflops,
         "vram_gb": vram_gb,
         "max_params_b": max_params_b,
+        "params_b": params_b,
         "h_min": h_min,
         "eta": eta,
         "c_local": c_local,
+        "eta_chinchilla": eta_chin,
+        "c_quality": c_quality,
+        "total_tokens_T": total_tokens / 1e12,
+        "overtraining_ratio": overtraining_ratio,
         "cost_usd": cost_usd,
         "strict_threshold_multiple": c_local / 1e24,
     }
@@ -1336,6 +1723,41 @@ if __name__ == "__main__":
     print(f"   6mo: {r_half['c_local']:.2e}, 1.5yr: {r_full['c_local']:.2e}")
     print(f"   Ratio: {ratio_time:.3f} (expected 0.333): {'PASS' if abs(ratio_time - 1/3) < 0.01 else 'CHECK'}")
 
+    # Check 8: Chinchilla loss at known scale matches intuition
+    # GPT-3 175B trained on 300B tokens → loss ~1.73 (Table D.1 Brown et al.)
+    l_gpt3 = chinchilla_loss(175e9, 300e12)
+    print(f"\n8. Chinchilla loss sanity check:")
+    print(f"   L(175B, 300B tokens) = {l_gpt3:.4f}")
+    print(f"   Expected ~1.8-1.9 (GPT-3 actual ~1.73, scaling law approximate)")
+    print(f"   {'PASS' if 1.7 < l_gpt3 < 2.0 else 'CHECK'}")
+
+    # Check 9: Chinchilla-optimal allocation round-trip
+    c_test = 6 * 100e9 * 25.6 * 100e9  # Chinchilla-optimal compute for 100B
+    n_opt, d_opt = chinchilla_optimal_allocation(c_test)
+    print(f"\n9. Chinchilla allocation round-trip:")
+    print(f"   C for 100B optimal = {c_test:.2e}")
+    print(f"   N_opt = {n_opt/1e9:.1f}B, D_opt = {d_opt/1e12:.2f}T")
+    print(f"   D/N ratio = {d_opt/n_opt:.1f} (expected 25.6)")
+    print(f"   {'PASS' if abs(n_opt/1e9 - 100) < 1 and abs(d_opt/n_opt - 25.6) < 0.1 else 'CHECK'}")
+
+    # Check 10: eta_chinchilla = 1.0 at optimal allocation
+    eta_at_opt = chinchilla_efficiency(n_opt, d_opt, c_test)
+    print(f"\n10. eta_chinchilla at optimal = {eta_at_opt:.4f}")
+    print(f"    {'PASS' if eta_at_opt > 0.99 else 'CHECK'}")
+
+    # Check 11: C_quality <= C_local always
+    r_ot = compute_scenario("48x A100 80GB", 500)
+    print(f"\n11. C_quality <= C_local check (500 nodes, 48xA100):")
+    print(f"    C_local = {r_ot['c_local']:.2e}, C_quality = {r_ot['c_quality']:.2e}")
+    print(f"    {'PASS' if r_ot['c_quality'] <= r_ot['c_local'] else 'FAIL'}")
+
+    # Check 12: Activation compression quality = 1.0 when no compression or 1 stage
+    act_no_comp = activation_compression_quality(1, 4)
+    act_1_stage = activation_compression_quality(4, 1)
+    print(f"\n12. Activation compression edge cases:")
+    print(f"    No compression (ratio=1, S=4): {act_no_comp:.4f} {'PASS' if act_no_comp == 1.0 else 'FAIL'}")
+    print(f"    One stage (ratio=4, S=1): {act_1_stage:.4f} {'PASS' if act_1_stage == 1.0 else 'FAIL'}")
+
     # ── PART 6: Treaty modification analysis ──────────────────────────────────
 
     print("\n" + "=" * 80)
@@ -1408,3 +1830,52 @@ if __name__ == "__main__":
             pct = r['c_local'] / best_c * 100
             print(f"  {r['bw_mbps']:>10} | {h_str:>5} | {r['eta']:>7.3f} | "
                   f"{r['c_local']:>11.2e} | {r['strict_threshold_multiple']:>7.1f} | {pct:>9.0f}%")
+
+    # ── PART 8: Model size optimization & PP-Group DiLoCo ─────────────────────
+
+    print("\n" + "=" * 80)
+    print("PART 8: MODEL SIZE OPTIMIZATION & PP-GROUP DiLoCo")
+    print("=" * 80)
+    print(f"\nActivation compression: {PP_COMPRESSION}x (4-bit quantization)")
+    print(f"PP interconnect: {PP_BW_BPS/1e9:.0f} Gbps, {PP_LATENCY_S*1000:.0f} ms (regional co-location)")
+    print(f"Chinchilla optimal D/N ratio: {CHINCHILLA_TOKENS_PER_PARAM}")
+    print(f"Micro-batches: {MICRO_BATCHES}")
+
+    print("\nActivation compression quality factors (per stage boundary):")
+    for cr, factors in sorted(ACTIVATION_COMPRESSION_QUALITY.items()):
+        print(f"  {cr:>4}x: optimistic={factors['optimistic']:.3f}, "
+              f"expected={factors['expected']:.3f}, "
+              f"conservative={factors['conservative']:.3f}")
+
+    # Key node counts for model size sweep
+    sweep_configs = [
+        ("48x A100 80GB", 72),
+        ("48x A100 80GB", 500),
+        ("48x A100 80GB", 4000),
+        ("16x H100 FP8", 2000),
+    ]
+
+    for cfg_name, n in sweep_configs:
+        print_model_size_sweep(cfg_name, n)
+
+    # Summary: best C_quality at each scale
+    print("\n\n--- Summary: Optimal model size at each scale ---")
+    print(f"  {'Config':>20} | {'Nodes':>5} | {'Best Mode':>12} | {'Model':>7} | "
+          f"{'PP':>2} | {'C_quality':>10} | {'vs DiLoCo max':>13}")
+    print("  " + "-" * 90)
+
+    for cfg_name, n in sweep_configs:
+        results = sweep_model_sizes(cfg_name, n)
+        best = results[0] if results else None
+        # Find the max-VRAM DiLoCo result for comparison
+        diloco_max = [r for r in results if r.get("mode_type") == "DiLoCo"
+                      and r.get("pp_stages", 1) == 1]
+        diloco_max_c = max((r["c_quality"] for r in diloco_max), default=0)
+        improvement = best["c_quality"] / diloco_max_c if diloco_max_c > 0 else float('inf')
+
+        if best:
+            model_str = f"{best['params_b']:.0f}B"
+            print(f"  {cfg_name:>20} | {n:>5} | {best.get('mode_type','?'):>12} | "
+                  f"{model_str:>7} | "
+                  f"{best.get('pp_stages',1):>2} | {best['c_quality']:>10.2e} | "
+                  f"{improvement:>12.2f}x")
