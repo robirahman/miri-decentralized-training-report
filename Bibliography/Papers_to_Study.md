@@ -34,3 +34,33 @@ The following papers have been identified as high-priority sources to improve th
 *   **[DisTrO: Distributed Training Over-The-Internet (Nous Research)](https://nousresearch.com/distro/)**
     *   **Why:** This is currently the most aggressive claim for WAN training (100x-1000x bandwidth reduction).
     *   **Impact on Simulator:** Foundational for justifying the feasibility of $10^{27}$ FLOP runs. We need to study their technical releases to validate if these ratios hold for 10T+ parameter models.
+
+---
+
+## 5. Recently Identified Research (February 2026 Literature Review)
+
+These papers were identified during a systematic literature review and are directly relevant to the simulator's current modeling gaps.
+
+### Pipeline Parallelism Modeling
+*   **[Zero Bubble Pipeline Parallelism (Qi et al., 2024)](https://arxiv.org/abs/2401.10241)**
+    *   **Why:** Achieves zero pipeline bubbles by splitting backward into input-gradient and weight-gradient phases. Foundation for DeepSeek-V3's DualPipe. Now standard practice at frontier labs.
+    *   **Impact on Simulator:** Our GPipe bubble formula $(M + S - 1)$ is pessimistic. Could add a "bubble efficiency" parameter (1.0 for GPipe, ~0.0 for zero-bubble schedules) to the PP-Group DiLoCo mode.
+*   **[DeepSeek-V3 Technical Report (2024)](https://arxiv.org/abs/2412.19437)**
+    *   **Why:** DualPipe eliminates pipeline bubbles and fully overlaps EP communication with compute. FP8 training at 671B MoE scale. Real training cost: 2.788M H800 GPU-hours.
+    *   **Impact on Simulator:** Provides real-world data to validate the simulator's PP + MoE modeling. The compute-communication overlap for EP is not modeled in our simulator.
+
+### Hierarchical & Async DiLoCo
+*   **[HALoS: Hierarchical Asynchronous Local SGD (Kim et al., 2025)](https://arxiv.org/abs/2506.04531)**
+    *   **Why:** Directly models hierarchical async Local SGD for geo-distributed LLM training. 7.5x faster convergence than synchronous baselines. Includes their own simulator.
+    *   **Impact on Simulator:** Validates or challenges our hierarchical DiLoCo model and the $\sqrt{H_{\text{regional}}}$ effective-H heuristic. Their simulator could be used for cross-validation.
+*   **[Asynchronous Local-SGD Training for Language Modeling (Liu, Douillard et al., 2024)](https://arxiv.org/abs/2401.09135)**
+    *   **Why:** Comprehensive DeepMind study of async vs. sync Local SGD efficiency for LLM pretraining. Introduces Delayed Nesterov outer optimizer and Dynamic Local Updates.
+    *   **Impact on Simulator:** Provides empirical data to calibrate the algorithmic efficiency penalty $\alpha$. Could replace our engineering estimate with published measurements.
+
+### Communication & Reliability
+*   **[SPARTA: Sparse Parameter Averaging for DiLoCo (2025)](https://openreview.net/pdf?id=stFPf3gzq1)**
+    *   **Why:** 1000x+ communication reduction by exchanging only sparse parameter subsets. Allows H=10,000 while improving perplexity by 14.3%.
+    *   **Impact on Simulator:** Would dramatically change bandwidth requirements if validated at scale. Could be modeled as an extreme compression preset.
+*   **[Distributed Training under Packet Loss (Weintraub et al., 2025)](https://arxiv.org/abs/2507.07114)**
+    *   **Why:** First framework for training over unreliable connections. 10% random packet loss causes only 0.8% perplexity change on LLaMA-2 7B.
+    *   **Impact on Simulator:** Our simulator assumes reliable TCP. This paper shows WAN packet loss has minimal impact, which is reassuring for our modeling assumptions.
