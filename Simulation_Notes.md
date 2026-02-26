@@ -161,7 +161,8 @@ For each candidate threshold, shows the maximum sub-threshold node (A100 80GB) a
 
 *   **Cost is nearly constant (~$3M) regardless of threshold.** DiLoCo redistributes the same total GPUs into more, smaller nodes.
 *   **Model quality degrades significantly:** 240B at current threshold vs 15B at threshold=1.
-*   **Collateral damage escalates:** 0 legitimate systems caught at 16; 4 at threshold 4; 11 at threshold 1.
+*   **Registration burden escalates:** 0 legitimate systems caught at 16; 4 at threshold 4; 11 at threshold 1. (Systems are subject to registration and inspection, not banned.)
+*   **Indirect benefit:** More nodes = more inspection points, increasing detection probability for each node.
 
 ### Memory Threshold Analysis
 
@@ -178,21 +179,23 @@ For each candidate threshold, shows the maximum sub-threshold node (A100 80GB) a
 
 ### Countermeasure Effectiveness Summary
 
-| Countermeasure | vs Non-State | vs State | Collateral | Recommended? |
+| Countermeasure | vs Non-State | vs State | Reg. Burden | Recommended? |
 |:--|:--|:--|:--|:--|
-| Lower CCC threshold | Low | None | High | No |
+| Lower CCC threshold (to 4-8) | Low-Med | None | Moderate | **Consider** |
 | Memory threshold (1 TB) | Low-Med | None | Low | **Yes** |
-| Bandwidth restrictions | None | None | Very high | No |
-| Traffic fingerprinting | Low | Low | High | No |
+| Bandwidth caps | None | None | Moderate | No (technically ineffective) |
+| Traffic monitoring at GPU sites | Low-Med | Low | Low | **Yes** (supplementary) |
 | TEE/Remote attestation | **High** | Low | Medium | **Yes** (medium-term) |
-| Orchestration regulation | None | None | Medium | No |
+| Orchestration regulation | None | None | Low | No (unenforceable) |
 | Model possession redefinition | Medium | Low | None | **Yes** |
 | Enhanced chip tracking | **Med-High** | Low | Low | **Yes** |
 | Whistleblower programs | **Med-High** | Low | None | **Yes** |
 
+Note: "Reg. Burden" refers to the registration, reporting, and inspection obligations imposed on legitimate computing systems — not bans or confiscation. Systems caught by lower thresholds must be registered and may be subject to inspections, but continue to operate normally.
+
 ### Conclusions
 
-*   **No single modification closes the loophole.** The fundamental challenge is that DiLoCo's cost depends on total GPUs, not per-node size, so threshold-based countermeasures are ineffective.
-*   **Against non-state actors:** TEE-based attestation + enhanced chip tracking + whistleblower programs is the most effective combination.
+*   **No single modification closes the loophole.** The fundamental challenge is that DiLoCo's cost depends on total GPUs, not per-node size, so threshold-based countermeasures cannot increase evasion cost. However, they can increase inspection surface and constrain model quality.
+*   **Against non-state actors:** TEE-based attestation + enhanced chip tracking + whistleblower programs is the most effective combination. Lower thresholds and traffic monitoring provide supplementary value.
 *   **Against state actors:** Only diplomatic, intelligence, and financial instruments are effective. Technical countermeasures are insufficient against actors with domestic chip manufacturing and classified procurement.
-*   **Recommended package:** 1 TB VRAM threshold, TEE attestation mandate, model possession redefinition, enhanced whistleblower bounties, utilization reporting.
+*   **Recommended package:** 1 TB VRAM threshold, TEE attestation mandate, model possession redefinition, enhanced whistleblower bounties, utilization reporting, consider lowering CCC threshold to 4-8 H100-eq, traffic monitoring (not caps) at GPU facilities.
