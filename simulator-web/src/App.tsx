@@ -63,7 +63,7 @@ function App() {
   
   // Hardware Parameters
   const [numNodes, setNumNodes] = useState(72)
-  const [pflopsPerNode, setPflopsPerNode] = useState(32) // GH200 x16
+  const [pflopsPerNode, setPflopsPerNode] = useState(16) // Sub-CCC node (≤16 H100-equiv)
   const [vramPerNode, setVramPerNode] = useState(2304) // 16x 144GB
   const [bandwidthMbps, setBandwidthMbps] = useState(100)
   const [latencyMs, setLatencyMs] = useState(100) // Inter-node ping
