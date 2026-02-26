@@ -238,3 +238,160 @@ These are resources comparable to a major nation's annual military procurement b
 | **10^28** | 20,000-40,000 | $10-29B | Superpower-level resources |
 
 The compute threshold in the treaty (10^24 FLOP) is designed to catch training runs at the **research lab** level and above. Distributed training with DiLoCo makes this threshold porous at the 4-72 node scale ($3-52M), where financial detection is challenging. At the 10^27+ scale, the treaty's financial monitoring and chip tracking provisions become the effective enforcement mechanism, since the hardware procurement itself is the hardest step to conceal.
+
+## 9. Network Sensitivity Analysis
+
+The analysis in Sections 5-8 assumes a baseline network of 100 Mbps symmetric WAN with 100 ms RTT. This section examines how sensitive the results are to degraded network conditions — lower bandwidth, higher latency, and realistic deployment profiles across different geographical regions. The central question is: **does DiLoCo's performance degrade significantly under realistic or adversarial network conditions?**
+
+### 9.1 Real-World Network Parameters
+
+All latency values are from measured RTT data (Azure Network Latency Statistics June 2025, Verizon IP Latency, Epsilon Telecom, AWS inter-region via CloudPing.co):
+
+| Scenario | Measured RTT | Source |
+|:--|:--|:--|
+| Same cloud region (cross-AZ) | 1-2 ms | AWS, Azure intra-region P50 |
+| Same continent (Europe) | ~20 ms | London–Frankfurt (Epsilon 20ms, Azure 17ms) |
+| Continental US | ~65 ms | NYC–LA (Epsilon 64ms, Azure East-West 71ms) |
+| Transatlantic | ~75 ms | NYC–London (Verizon 70ms, Epsilon 75ms, Azure 79ms) |
+| Transpacific | ~105 ms | LA–Tokyo (AWS 105ms, Epsilon 100ms) |
+| US East Coast–Asia | ~230 ms | Virginia–Singapore (AWS 224ms) |
+| Global worst-case | ~340 ms | Brazil–SE Asia (Azure 332-343ms) |
+
+Bandwidth tiers available for distributed training:
+
+| Tier | Typical Speed | Availability |
+|:--|:--|:--|
+| Consumer broadband (cable) | 20 Mbps upload | Widely available |
+| Consumer fiber | 100-1000 Mbps symmetric | Increasingly common |
+| Business DIA | 1-10 Gbps | Available in metro areas |
+| Enterprise leased line | 10-100 Gbps | Major DCs only |
+
+### 9.2 Bandwidth Sensitivity
+
+Bandwidth was swept from 10 Mbps to 1 Gbps while holding latency at 100 ms. Results for representative configurations:
+
+**72 nodes, 48x A100 FP16, 16x compression (targeting 10^25):**
+
+| BW (Mbps) | H_min | $\eta$ | C_local (FLOP) | % of best |
+|:--|:--|:--|:--|:--|
+| 10 | 1,994 | 0.821 | 1.68 x 10^25 | 88% |
+| 25 | 798 | 0.843 | 1.72 x 10^25 | 91% |
+| 50 | 399 | 0.859 | 1.75 x 10^25 | 92% |
+| **100** | **200** | **0.875** | **1.79 x 10^25** | **94%** |
+| 250 | 80 | 0.897 | 1.83 x 10^25 | 96% |
+| 500 | 40 | 0.913 | 1.86 x 10^25 | 98% |
+| 1,000 | 20 | 0.929 | 1.90 x 10^25 | 100% |
+
+**2,000 nodes, 16x H100 FP8, 16x compression (targeting 10^27):**
+
+| BW (Mbps) | H_min | $\eta$ | C_local (FLOP) | % of best |
+|:--|:--|:--|:--|:--|
+| 10 | 2,495 | 0.805 | 9.66 x 10^26 | 88% |
+| 25 | 998 | 0.828 | 9.93 x 10^26 | 90% |
+| 50 | 499 | 0.845 | 1.01 x 10^27 | 92% |
+| **100** | **250** | **0.862** | **1.03 x 10^27** | **94%** |
+| 500 | 50 | 0.902 | 1.08 x 10^27 | 98% |
+| 1,000 | 25 | 0.920 | 1.10 x 10^27 | 100% |
+
+**2,000 nodes, 16x H100 FP8, hierarchical + 100x compression (Config F):**
+
+| BW (Mbps) | H_eff | $\eta$ | C_local (FLOP) | % of best |
+|:--|:--|:--|:--|:--|
+| 10 | 33 | 0.913 | 1.10 x 10^27 | 95% |
+| 25 | 21 | 0.924 | 1.11 x 10^27 | 96% |
+| 50 | 15 | 0.932 | 1.12 x 10^27 | 97% |
+| **100** | **11** | **0.941** | **1.13 x 10^27** | **98%** |
+| 500 | 5 | 0.959 | 1.15 x 10^27 | 99% |
+| 1,000 | 4 | 0.964 | 1.16 x 10^27 | 100% |
+
+**Key finding:** Reducing bandwidth from 100 Mbps to 10 Mbps — a 10x degradation — costs only **6% of C_local** for flat DiLoCo and **3% for hierarchical+100x**. DiLoCo compensates by increasing $H$: at 10 Mbps, $H_{\min}$ rises to ~2,000-2,500 (flat) or ~33 (hierarchical+100x), which increases $\log_{10}(H)$ and thus reduces $\eta$, but only modestly due to the logarithmic dependence.
+
+### 9.3 Latency Sensitivity
+
+Latency was swept across all real-world scenarios from 2 ms (same cloud region) to 340 ms (Brazil–SE Asia) while holding bandwidth at 100 Mbps.
+
+**Result: Latency has virtually no effect on any configuration.**
+
+For all configurations tested — 72 nodes flat, 500 nodes flat, 2,000 nodes flat, and 2,000 nodes hierarchical+100x — the C_local values are **identical** across all latency scenarios (2 ms to 340 ms). The H values do not change.
+
+**Why latency is irrelevant:** The sync time formula is $T_{\text{sync}} = 2 \cdot V_{\text{bits}} / BW + \text{latency}$. For a 240B model with 16x compression at 100 Mbps:
+
+$$V_{\text{bits}} = 240 \times 10^9 \times 16 / 16 = 240 \text{ Gbit}$$
+$$T_{\text{sync,bandwidth}} = 2 \times 240 \times 10^9 / (100 \times 10^6) = 4{,}800 \text{ seconds}$$
+
+The bandwidth term is **4,800 seconds**. Even the global worst-case latency of 340 ms is only **0.007%** of the sync time. Latency is negligible compared to the time required to transfer billions of pseudo-gradient values, even with 16x compression.
+
+Even in the most latency-favorable scenario — small model (91B), FP8, 100x compression, 1 Gbps bandwidth:
+
+$$V_{\text{bits}} = 91 \times 10^9 \times 8 / 100 = 7.28 \text{ Gbit}$$
+$$T_{\text{sync,bandwidth}} = 2 \times 7.28 \times 10^9 / (1 \times 10^9) = 14.6 \text{ seconds}$$
+
+At 14.6 seconds, 340 ms latency is still only 2.3% of sync time — below the threshold where it would change $H_{\min}$. **Latency only becomes relevant for models under ~1B parameters or with compression ratios exceeding 1,000x**, neither of which is realistic for frontier-scale training.
+
+### 9.4 Combined Deployment Profiles
+
+Realistic network conditions combine both bandwidth and latency. The table below shows results for deployment profiles that an evader might realistically use, ranging from co-located nodes in the same city to maximally distributed nodes across the globe.
+
+**72 nodes, 48x A100 FP16, 16x compression (10^25 target, ~$52M):**
+
+| Deployment | BW | RTT | H | $\eta$ | C_local | % of best |
+|:--|:--|:--|:--|:--|:--|:--|
+| Colocated (same metro) | 1 Gbps | 5 ms | 20 | 0.929 | 1.90 x 10^25 | 100% |
+| Same country (US) | 500 Mbps | 35 ms | 40 | 0.913 | 1.86 x 10^25 | 98% |
+| Continental US | 100 Mbps | 65 ms | 200 | 0.875 | 1.79 x 10^25 | 94% |
+| Transatlantic | 100 Mbps | 75 ms | 200 | 0.875 | 1.79 x 10^25 | 94% |
+| Transpacific | 50 Mbps | 105 ms | 399 | 0.859 | 1.75 x 10^25 | 92% |
+| Global adversarial | 25 Mbps | 230 ms | 798 | 0.843 | 1.72 x 10^25 | 91% |
+| Global worst-case | 10 Mbps | 340 ms | 1,994 | 0.821 | 1.68 x 10^25 | 88% |
+
+**2,000 nodes, 16x H100 FP8, hier+100x (Config F, 10^27 target, ~$960M):**
+
+| Deployment | BW | RTT | H_eff | $\eta$ | C_local | % of best |
+|:--|:--|:--|:--|:--|:--|:--|
+| Colocated (same metro) | 1 Gbps | 5 ms | 4 | 0.964 | 1.16 x 10^27 | 100% |
+| Same country (US) | 500 Mbps | 35 ms | 5 | 0.959 | 1.15 x 10^27 | 99% |
+| Continental US | 100 Mbps | 65 ms | 11 | 0.941 | 1.13 x 10^27 | 97% |
+| Transatlantic | 100 Mbps | 75 ms | 11 | 0.941 | 1.13 x 10^27 | 97% |
+| Transpacific | 50 Mbps | 105 ms | 15 | 0.932 | 1.12 x 10^27 | 97% |
+| Global adversarial | 25 Mbps | 230 ms | 21 | 0.924 | 1.11 x 10^27 | 96% |
+| Global worst-case | 10 Mbps | 340 ms | 33 | 0.913 | 1.10 x 10^27 | 95% |
+
+### 9.5 Achievability of 10^26 and 10^27 Under Degraded Networks
+
+**10^26 FLOP under degraded networks (500 nodes, 48x A100 FP16, 16x comp, 1.5 years):**
+
+| Network Conditions | C_local | Achievable? |
+|:--|:--|:--|
+| 100 Mbps, 100 ms (baseline) | 1.24 x 10^26 | Yes |
+| 50 Mbps, 105 ms (transpacific) | 1.21 x 10^26 | Yes |
+| 25 Mbps, 230 ms (global) | 1.19 x 10^26 | Yes |
+| 10 Mbps, 340 ms (worst-case) | 1.16 x 10^26 | **Yes** |
+
+10^26 FLOP is achievable under **all tested network conditions**, including the global worst-case. Even at 10 Mbps with 340 ms latency, 500 nodes of 48x A100 produce 1.16 x 10^26 FLOP — comfortably above the 10^26 target.
+
+**10^27 FLOP under degraded networks (2,000 nodes, 16x H100 FP8, 1.5 years):**
+
+| Network Conditions | C_local (flat, 16x) | C_local (hier+100x) | Achievable? |
+|:--|:--|:--|:--|
+| 100 Mbps, 100 ms | 1.03 x 10^27 | 1.13 x 10^27 | Yes |
+| 50 Mbps, 105 ms | 1.01 x 10^27 | 1.12 x 10^27 | Yes |
+| 25 Mbps, 230 ms | 9.93 x 10^26 | 1.11 x 10^27 | Marginal (flat) / **Yes** (hier) |
+| 10 Mbps, 340 ms | 9.66 x 10^26 | 1.10 x 10^27 | No (flat) / **Yes** (hier) |
+
+With flat DiLoCo and 16x compression, 10^27 FLOP requires at least ~50 Mbps per node. Below that, flat DiLoCo at 2,000 nodes falls short of 10^27, though it still produces ~9.7 x 10^26 (97% of target). With hierarchical DiLoCo and 100x compression, 10^27 is achievable **even at 10 Mbps with 340 ms latency** — the protocol's combination of regional syncs and aggressive compression makes it nearly network-independent.
+
+### 9.6 Implications for Treaty Enforcement
+
+The sensitivity analysis reveals three governance-critical findings:
+
+**1. DiLoCo is bandwidth-insensitive by design.** The protocol absorbs low bandwidth by increasing the synchronization interval $H$. Because efficiency depends on $\log_{10}(H)$, a 10x increase in $H$ (needed to compensate for 10x lower bandwidth) costs only a constant reduction in $\eta$. Across the full range from 10 Mbps to 1 Gbps, C_local varies by only 12% (flat) to 5% (hierarchical+100x). This means:
+- **Network throttling is not an effective countermeasure.** Even if the treaty imposed bandwidth restrictions on sub-CCC nodes, an evader using 10 Mbps consumer broadband upload speeds would lose at most 12% of their achievable compute.
+- **Network monitoring faces an asymmetry problem.** The evader's pseudo-gradient traffic, compressed 16-100x and transmitted intermittently (every few minutes to hours), is indistinguishable from ordinary cloud backup, video streaming, or file synchronization traffic.
+
+**2. Latency is irrelevant to distributed training.** The sync volumes in frontier-scale training (Gbits to Tbits) make round-trip latency negligible. Even the Brazil-to-Southeast-Asia worst case (340 ms) has zero measurable impact. This means:
+- **Geographical distribution is free.** An evader can spread nodes across continents with no performance penalty, maximizing resistance to physical seizure and jurisdictional enforcement.
+- **Submarine cable routing and peering arrangements are irrelevant.** The evader needs no special network infrastructure — ordinary consumer internet suffices.
+
+**3. Hierarchical DiLoCo + compression creates a compounding defense.** With 100x compression and regional clustering, the sync volume drops to ~7 Gbit per direction (for a 91B FP8 model), and the two-tier structure means only group aggregates traverse the WAN. The resulting system achieves $\eta > 0.91$ under *all* tested network conditions, including the worst-case global deployment. An evader using this configuration needs only consumer fiber connections and achieves 95% of the theoretical maximum compute.
+
+**Summary:** The treaty's compute threshold (10^24 FLOP) cannot be enforced through network-level controls. DiLoCo's architecture makes it inherently robust to bandwidth constraints and completely insensitive to latency. The effective enforcement mechanisms remain chip tracking, financial monitoring, and physical detection of GPU concentrations — not network monitoring or bandwidth restrictions.

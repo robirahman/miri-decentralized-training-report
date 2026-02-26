@@ -86,3 +86,57 @@ Extension of Scenario 2 to explore whether state-actor-level resources could ach
 ### Conclusions
 
 10^27 FLOP is technically achievable with DiLoCo over WAN, but the hardware procurement ($1-3B) is the binding constraint. The treaty's financial monitoring and chip tracking provisions are the effective enforcement mechanism at this scale, not the compute threshold.
+
+---
+
+## Scenario 4: Network Sensitivity — Bandwidth, Latency, and Deployment Profiles
+
+Tests whether degraded network conditions (lower bandwidth, higher latency) significantly reduce achievable compute. Uses real-world measured latency values from Azure, AWS, Verizon, and Epsilon Telecom. Full analysis in [Governance_Analysis.md](Governance_Analysis.md), Section 9.
+
+### Bandwidth Sensitivity (100 ms latency, varying bandwidth)
+
+**72 nodes, 48x A100 FP16, 16x compression:**
+
+| BW (Mbps) | H_min | $\eta$ | C_local (FLOP) | % of best |
+|:--|:--|:--|:--|:--|
+| 10 | 1,994 | 0.821 | 1.68e25 | 88% |
+| 100 (baseline) | 200 | 0.875 | 1.79e25 | 94% |
+| 1,000 | 20 | 0.929 | 1.90e25 | 100% |
+
+**2,000 nodes, 16x H100 FP8, hier+100x (Config F):**
+
+| BW (Mbps) | H_eff | $\eta$ | C_local (FLOP) | % of best |
+|:--|:--|:--|:--|:--|
+| 10 | 33 | 0.913 | 1.10e27 | 95% |
+| 100 (baseline) | 11 | 0.941 | 1.13e27 | 98% |
+| 1,000 | 4 | 0.964 | 1.16e27 | 100% |
+
+### Latency Sensitivity (100 Mbps, varying real-world latency)
+
+**Result:** Latency has zero measurable impact across all tested configurations. H_min and $\eta$ are identical from 2 ms (same cloud region) to 340 ms (Brazil–SE Asia). This is because sync volumes (hundreds of Gbits) make RTT negligible — even 340 ms is only 0.007% of the ~4,800-second bandwidth-limited sync time.
+
+### Deployment Profile Summary (combined BW + latency)
+
+**72 nodes, 48x A100 FP16, 16x comp:**
+
+| Deployment | BW | RTT | $\eta$ | C_local | % of best |
+|:--|:--|:--|:--|:--|:--|
+| Colocated (same metro) | 1 Gbps | 5 ms | 0.929 | 1.90e25 | 100% |
+| Continental US | 100 Mbps | 65 ms | 0.875 | 1.79e25 | 94% |
+| Global worst-case | 10 Mbps | 340 ms | 0.821 | 1.68e25 | 88% |
+
+**2,000 nodes, 16x H100 FP8, hier+100x:**
+
+| Deployment | BW | RTT | $\eta$ | C_local | % of best |
+|:--|:--|:--|:--|:--|:--|
+| Colocated (same metro) | 1 Gbps | 5 ms | 0.964 | 1.16e27 | 100% |
+| Continental US | 100 Mbps | 65 ms | 0.941 | 1.13e27 | 97% |
+| Global worst-case | 10 Mbps | 340 ms | 0.913 | 1.10e27 | 95% |
+
+### Conclusions
+
+*   **Bandwidth is the only network parameter that matters**, and even a 10x bandwidth reduction (100→10 Mbps) costs only 6-12% of C_local. DiLoCo compensates by increasing H.
+*   **Latency is irrelevant** for any realistic model size and compression level. Sync volumes dominate RTT by 4-5 orders of magnitude.
+*   **10^26 is achievable under all network conditions** (500 nodes, 48x A100, even at 10 Mbps/340 ms).
+*   **10^27 requires hierarchical+100x at very low bandwidths** (flat DiLoCo falls short below ~50 Mbps), but with Config F it is achievable even at 10 Mbps globally.
+*   **Network-level enforcement is ineffective.** An evader using consumer broadband loses at most 12% of compute versus an optimized local deployment. The treaty cannot rely on network monitoring or bandwidth restrictions to prevent distributed training.

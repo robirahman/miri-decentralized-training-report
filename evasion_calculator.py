@@ -107,7 +107,8 @@ def efficiency(h, params_billion):
 
 def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                      time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
-                     bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD):
+                     bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                     bw_bps=None, latency_s=None):
     """Compute all metrics for a given node configuration and node count."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -118,6 +119,10 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    if latency_s is None:
+        latency_s = LATENCY_S
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -137,7 +142,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     v_bits = params * bits_per_pseudo_grad / compression
 
     # Sync time (base, before straggler)
-    t_sync_base = 2 * v_bits / BW_BPS + LATENCY_S
+    t_sync_base = 2 * v_bits / bw_bps + latency_s
 
     # Straggler factor
     f_n = straggler_factor(n_nodes)
@@ -193,13 +198,17 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "strict_threshold_multiple": c_local / 1e24,
         "compression": compression,
         "time_seconds": time_seconds,
+        "bw_mbps": bw_bps / 1e6,
+        "latency_ms": latency_s * 1000,
     }
 
 
 def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PER_GROUP,
                                   compression=COMPRESSION, time_seconds=None,
                                   bytes_per_param=BYTES_PER_PARAM,
-                                  bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD):
+                                  bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                                  bw_bps=None, latency_s=None,
+                                  regional_bw_bps=None, regional_latency_s=None):
     """Compute metrics for hierarchical DiLoCo (two-tier topology)."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -210,6 +219,14 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    if latency_s is None:
+        latency_s = LATENCY_S
+    if regional_bw_bps is None:
+        regional_bw_bps = REGIONAL_BW_BPS
+    if regional_latency_s is None:
+        regional_latency_s = REGIONAL_LATENCY_S
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -231,16 +248,17 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     if n_groups < 2:
         # Fall back to flat DiLoCo
         return compute_scenario(config_name, n_nodes, compression, time_seconds,
-                                bytes_per_param, bits_per_pseudo_grad)
+                                bytes_per_param, bits_per_pseudo_grad,
+                                bw_bps, latency_s)
 
     # Regional sync (fast LAN)
     f_regional = straggler_factor(nodes_per_group)
-    t_regional_sync = (2 * v_bits / REGIONAL_BW_BPS + REGIONAL_LATENCY_S) * f_regional
+    t_regional_sync = (2 * v_bits / regional_bw_bps + regional_latency_s) * f_regional
     h_inner_min = max(1, math.ceil(t_regional_sync / t_comp))
 
     # Global sync (slow WAN)
     f_global = straggler_factor(n_groups)
-    t_global_sync = (2 * v_bits / BW_BPS + LATENCY_S) * f_global
+    t_global_sync = (2 * v_bits / bw_bps + latency_s) * f_global
 
     # Regional cycle time (streaming)
     t_regional_cycle = max(h_inner_min * t_comp, t_regional_sync)
@@ -538,6 +556,157 @@ def print_10e27_comparison():
               f"{c_str:>10} | {mult_str:>7}")
 
 
+# ── Network sensitivity parameters ───────────────────────────────────────────
+
+# Bandwidth sweep values (Mbps)
+BANDWIDTH_SWEEP_MBPS = [10, 25, 50, 100, 250, 500, 1000]
+
+# Latency scenarios based on real-world measurements
+# Sources: Azure Network Latency Stats (June 2025), Verizon IP Latency,
+#          Epsilon Telecom, AWS inter-region (CloudPing.co)
+LATENCY_SCENARIOS = {
+    "Same cloud region":     0.002,    #   2 ms — AWS cross-AZ, Azure intra-region
+    "Same continent (EU)":   0.020,    #  20 ms — London–Frankfurt (Epsilon)
+    "Continental US":        0.065,    #  65 ms — NYC–LA (Epsilon 64ms, Azure 71ms avg)
+    "Transatlantic":         0.075,    #  75 ms — NYC–London (Verizon 70ms, Azure 79ms)
+    "Transpacific":          0.105,    # 105 ms — LA–Tokyo (AWS Oregon-Tokyo, Epsilon)
+    "US East–Asia":          0.230,    # 230 ms — Virginia–Singapore (AWS 224ms)
+    "Global worst-case":     0.340,    # 340 ms — Brazil–SE Asia (Azure 332-343ms)
+}
+
+# Combined scenarios: realistic network profiles for different deployment models
+DEPLOYMENT_PROFILES = {
+    "Colocated (same metro)":  {"bw_mbps": 1000,  "latency_ms":   5, "description": "Nodes in nearby DCs, business fiber"},
+    "Same country (US)":       {"bw_mbps":  500,  "latency_ms":  35, "description": "Nodes across US, enterprise connections"},
+    "Continental (US coasts)": {"bw_mbps":  100,  "latency_ms":  65, "description": "NYC to LA, commodity broadband"},
+    "Continental (EU)":        {"bw_mbps":  100,  "latency_ms":  20, "description": "London to Frankfurt, commodity broadband"},
+    "Transatlantic":           {"bw_mbps":  100,  "latency_ms":  75, "description": "US to Europe, commodity broadband"},
+    "Transpacific":            {"bw_mbps":   50,  "latency_ms": 105, "description": "US to Japan, limited bandwidth"},
+    "Global (adversarial)":    {"bw_mbps":   25,  "latency_ms": 230, "description": "Maximally distributed, avoid detection"},
+    "Global worst-case":       {"bw_mbps":   10,  "latency_ms": 340, "description": "Brazil to SE Asia, consumer broadband"},
+}
+
+
+def bandwidth_sensitivity(config_name, n_nodes, compression=COMPRESSION,
+                          latency_s=None, use_hierarchical=False):
+    """Sweep bandwidth values and return results for each."""
+    if latency_s is None:
+        latency_s = LATENCY_S
+    results = []
+    for bw_mbps in BANDWIDTH_SWEEP_MBPS:
+        bw_bps = bw_mbps * 1e6
+        if use_hierarchical:
+            r = compute_hierarchical_scenario(config_name, n_nodes,
+                                              compression=compression,
+                                              bw_bps=bw_bps, latency_s=latency_s)
+        else:
+            r = compute_scenario(config_name, n_nodes, compression=compression,
+                                 bw_bps=bw_bps, latency_s=latency_s)
+        r["bw_mbps"] = bw_mbps
+        results.append(r)
+    return results
+
+
+def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
+                        bw_bps=None, use_hierarchical=False):
+    """Sweep latency values and return results for each."""
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    results = []
+    for name, lat_s in LATENCY_SCENARIOS.items():
+        if use_hierarchical:
+            r = compute_hierarchical_scenario(config_name, n_nodes,
+                                              compression=compression,
+                                              bw_bps=bw_bps, latency_s=lat_s)
+        else:
+            r = compute_scenario(config_name, n_nodes, compression=compression,
+                                 bw_bps=bw_bps, latency_s=lat_s)
+        r["latency_scenario"] = name
+        r["latency_ms"] = lat_s * 1000
+        results.append(r)
+    return results
+
+
+def deployment_profile_sweep(config_name, n_nodes, compression=COMPRESSION,
+                             use_hierarchical=False):
+    """Test all deployment profiles and return results."""
+    results = []
+    for name, profile in DEPLOYMENT_PROFILES.items():
+        bw_bps = profile["bw_mbps"] * 1e6
+        lat_s = profile["latency_ms"] / 1000.0
+        if use_hierarchical:
+            r = compute_hierarchical_scenario(config_name, n_nodes,
+                                              compression=compression,
+                                              bw_bps=bw_bps, latency_s=lat_s)
+        else:
+            r = compute_scenario(config_name, n_nodes, compression=compression,
+                                 bw_bps=bw_bps, latency_s=lat_s)
+        r["profile"] = name
+        r["profile_description"] = profile["description"]
+        r["bw_mbps"] = profile["bw_mbps"]
+        r["latency_ms"] = profile["latency_ms"]
+        results.append(r)
+    return results
+
+
+def print_bandwidth_sensitivity(config_name, n_nodes, compression=COMPRESSION,
+                                use_hierarchical=False):
+    """Print bandwidth sensitivity table."""
+    label = "hierarchical" if use_hierarchical else "flat"
+    print(f"\n  Bandwidth sensitivity: {config_name}, N={n_nodes}, {label}, {compression}x comp")
+    print(f"  {'BW (Mbps)':>10} | {'H_min/eff':>9} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7} | {'Regime':>12}")
+    print("  " + "-" * 72)
+    results = bandwidth_sensitivity(config_name, n_nodes, compression,
+                                    use_hierarchical=use_hierarchical)
+    for r in results:
+        h = r.get("h_eff", r.get("h_min", 1))
+        h_str = f"{h:.0f}" if isinstance(h, float) else f"{h}"
+        c_str = f"{r['c_local']:.2e}"
+        mult_str = f"{r['strict_threshold_multiple']:.1f}x"
+        # Determine if comm-bound: if not streaming, eta would be lower
+        regime = "compute" if r['eta'] > 0.5 else "comm-bound"
+        print(f"  {r['bw_mbps']:>10} | {h_str:>9} | {r['eta']:>5.3f} | {c_str:>10} | {mult_str:>7} | {regime:>12}")
+    return results
+
+
+def print_latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
+                              use_hierarchical=False):
+    """Print latency sensitivity table."""
+    label = "hierarchical" if use_hierarchical else "flat"
+    print(f"\n  Latency sensitivity: {config_name}, N={n_nodes}, {label}, {compression}x comp")
+    print(f"  {'Scenario':>25} | {'RTT (ms)':>8} | {'H_min/eff':>9} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7}")
+    print("  " + "-" * 82)
+    results = latency_sensitivity(config_name, n_nodes, compression,
+                                  use_hierarchical=use_hierarchical)
+    for r in results:
+        h = r.get("h_eff", r.get("h_min", 1))
+        h_str = f"{h:.0f}" if isinstance(h, float) else f"{h}"
+        c_str = f"{r['c_local']:.2e}"
+        mult_str = f"{r['strict_threshold_multiple']:.1f}x"
+        print(f"  {r['latency_scenario']:>25} | {r['latency_ms']:>8.0f} | {h_str:>9} | "
+              f"{r['eta']:>5.3f} | {c_str:>10} | {mult_str:>7}")
+    return results
+
+
+def print_deployment_profiles(config_name, n_nodes, compression=COMPRESSION,
+                              use_hierarchical=False):
+    """Print deployment profile sweep table."""
+    label = "hierarchical" if use_hierarchical else "flat"
+    print(f"\n  Deployment profiles: {config_name}, N={n_nodes}, {label}, {compression}x comp")
+    print(f"  {'Profile':>25} | {'BW':>6} | {'RTT':>5} | {'H':>5} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7}")
+    print("  " + "-" * 82)
+    results = deployment_profile_sweep(config_name, n_nodes, compression,
+                                       use_hierarchical=use_hierarchical)
+    for r in results:
+        h = r.get("h_eff", r.get("h_min", 1))
+        h_str = f"{h:.0f}" if isinstance(h, float) else f"{h}"
+        c_str = f"{r['c_local']:.2e}"
+        mult_str = f"{r['strict_threshold_multiple']:.1f}x"
+        print(f"  {r['profile']:>25} | {r['bw_mbps']:>4}M | {r['latency_ms']:>3.0f}ms | "
+              f"{h_str:>5} | {r['eta']:>5.3f} | {c_str:>10} | {mult_str:>7}")
+    return results
+
+
 if __name__ == "__main__":
     print("=" * 80)
     print("TREATY EVASION SCENARIO: Maximum Distributed Training Below CCC Threshold")
@@ -619,10 +788,73 @@ if __name__ == "__main__":
     print_time_sensitivity("48x A100 80GB", 4000)
     print_time_sensitivity("16x H100 FP8", 2000)
 
-    # ── PART 4: Cross-validation ────────────────────────────────────────────
+    # ── PART 4: Network sensitivity analysis ─────────────────────────────────
 
     print("\n" + "=" * 80)
-    print("CROSS-VALIDATION")
+    print("PART 4: NETWORK SENSITIVITY ANALYSIS")
+    print("=" * 80)
+
+    # --- 4A: Bandwidth sensitivity ---
+    print("\n" + "-" * 80)
+    print("4A: BANDWIDTH SENSITIVITY (varying BW, fixed 100ms latency)")
+    print("-" * 80)
+
+    # Small-scale evasion (72 nodes, 48x A100, reaching for 10^25)
+    print_bandwidth_sensitivity("48x A100 80GB", 72)
+
+    # Medium-scale (500 nodes, targeting 10^26)
+    print_bandwidth_sensitivity("48x A100 80GB", 500)
+
+    # Large-scale flat (4000 nodes A100, targeting 10^27)
+    print_bandwidth_sensitivity("48x A100 80GB", 4000)
+
+    # Large-scale FP8 flat (2000 nodes H100 FP8, targeting 10^27)
+    print_bandwidth_sensitivity("16x H100 FP8", 2000)
+
+    # Large-scale hierarchical (best config: H100 FP8, hier, 100x)
+    print_bandwidth_sensitivity("16x H100 FP8", 2000, compression=100,
+                                use_hierarchical=True)
+
+    # --- 4B: Latency sensitivity ---
+    print("\n" + "-" * 80)
+    print("4B: LATENCY SENSITIVITY (varying latency, fixed 100 Mbps BW)")
+    print("-" * 80)
+
+    # Reference: 72 nodes (10^25 target)
+    print_latency_sensitivity("48x A100 80GB", 72)
+
+    # 500 nodes (10^26 target)
+    print_latency_sensitivity("48x A100 80GB", 500)
+
+    # 2000 nodes H100 FP8 flat (10^27 target)
+    print_latency_sensitivity("16x H100 FP8", 2000)
+
+    # 2000 nodes H100 FP8 hierarchical + 100x (best config)
+    print_latency_sensitivity("16x H100 FP8", 2000, compression=100,
+                              use_hierarchical=True)
+
+    # --- 4C: Deployment profiles (combined BW + latency) ---
+    print("\n" + "-" * 80)
+    print("4C: DEPLOYMENT PROFILES (realistic BW + latency combinations)")
+    print("-" * 80)
+
+    # 72 nodes (sub-$100M evasion)
+    print_deployment_profiles("48x A100 80GB", 72)
+
+    # 500 nodes (10^26 target)
+    print_deployment_profiles("48x A100 80GB", 500)
+
+    # 2000 nodes FP8 (10^27 target) — flat
+    print_deployment_profiles("16x H100 FP8", 2000)
+
+    # 2000 nodes FP8 (10^27 target) — hierarchical + 100x
+    print_deployment_profiles("16x H100 FP8", 2000, compression=100,
+                              use_hierarchical=True)
+
+    # ── PART 5: Cross-validation ────────────────────────────────────────────
+
+    print("\n" + "=" * 80)
+    print("PART 5: CROSS-VALIDATION")
     print("=" * 80)
 
     # Check 1: Single 16xH100 node vs treaty claim
