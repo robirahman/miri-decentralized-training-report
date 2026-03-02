@@ -138,7 +138,7 @@ The **overtraining ratio** (OT) is the ratio of actual training tokens to the Ch
 
 At 72 nodes, C_quality = 1.55 x 10^25, reflecting the mild overtraining (2.3x) of a 240B model — well within the range that developers actively prefer. At 500 nodes, overtraining reaches 16x and $\eta_{\text{chin}}$ drops to 0.42. While 16x overtraining is beyond what developers typically choose, the real quality penalty is smaller than $\eta_{\text{chin}}$ suggests due to inference amortization. Nonetheless, at very large node counts the overtraining ratio becomes extreme (128x at 4,000 nodes), motivating the PP-Group DiLoCo analysis in Section 5.4, where larger models reduce overtraining.
 
-The 72-node reference point shows $\eta = 0.858$ under the expected scenario (optimistic: 0.875; conservative: 0.831). The corresponding C_local range is **1.70-1.79 x 10^25 FLOP** — the conclusion that 72 nodes exceeds the Strict Threshold by ~17x is robust across all compression quality assumptions.
+The 72-node reference point shows $\eta = 0.858$ under the expected scenario (optimistic: 0.875; conservative: 0.831). Varying compression quality alone gives a C_local range of 1.70-1.79 x 10^25 FLOP (~17x). However, this narrow range understates the true uncertainty because it holds several other uncertain quantities fixed. Accounting for realistic variation in MFU (30-45% vs. the assumed 40%), hardware availability over 18 months, the straggler model coefficient (an engineering estimate, not empirically calibrated at this scale), effective network bandwidth, and DiLoCo convergence behavior at 240B (extrapolated from experiments at ≤10B parameters), the plausible range widens to approximately **7-23x the Strict Threshold**. The core conclusion — that 72 nodes exceeds the threshold by a large margin — is robust even at the pessimistic end of this range.
 
 The **algorithmic efficiency** ($\eta$) is stable at 85-86% across all node counts. Under the optimistic scenario (no compression quality penalty), efficiency would be 87-88%. The 2% difference reflects the expected cost of 16x pseudo-gradient compression extrapolated to 240B scale.
 
@@ -207,7 +207,7 @@ The flat DiLoCo results in Section 5.1 all train the largest model that fits on 
 
 ### 6.1 The Threshold is Easily Exceeded
 
-**As few as 4 unregistered nodes** (~200 A100 GPUs, ~$3M) are sufficient to match the 10^24 FLOP Strict Threshold in 1.5 years. This conclusion is robust: under the conservative compression quality scenario, 4 nodes still produce 9.52 x 10^23 FLOP (~1.0x threshold). This is a modest investment — comparable to a single research lab's annual GPU budget. At 72 nodes ($52M), the evader achieves **17.5x** the threshold (range: 17.0-17.9x), training a 240B-parameter model that would be competitive with frontier models.
+**As few as 4 unregistered nodes** (~200 A100 GPUs, ~$3M) are sufficient to match the 10^24 FLOP Strict Threshold in 1.5 years. This conclusion is robust: under the conservative compression quality scenario, 4 nodes still produce 9.52 x 10^23 FLOP (~1.0x threshold). This is a modest investment by industry standards — comparable to a mid-size tech company's annual ML compute budget, though it substantially exceeds what most academic research labs can afford. At 72 nodes ($52M), the evader achieves an estimated **~7-23x** the threshold (central estimate 17.5x; range driven by uncertainties in MFU, hardware availability, straggler effects, and DiLoCo convergence at scale), training a 240B-parameter model that would be competitive with frontier models.
 
 ### 6.2 The CCC Interconnect Criterion Is Irrelevant for DiLoCo
 
@@ -218,10 +218,10 @@ The treaty's CCC definition includes clusters with "inter-node aggregate bandwid
 DiLoCo training creates a distinctive network "heartbeat": synchronization traffic at regular intervals. However, with Streaming DiLoCo, this traffic is spread continuously rather than bursty:
 
 - **Average bandwidth per node:** Each sync exchanges 240 Gbit (30 GB) compressed pseudo-gradients in each direction. With streaming enabled and H optimized for compute-bound operation, the sync data is spread over the full ~100-minute outer step, resulting in ~38 Mbps average upload + ~38 Mbps average download. This is comparable to a media server or cloud backup service.
-- **Traffic is encrypted:** Standard VPN tunnels obscure content. The sustained ~76 Mbps throughput is not unusual for internet-connected servers.
+- **Traffic is encrypted but fingerprintable:** Standard VPN tunnels obscure payload content but not traffic metadata (packet timing, sizes, volume patterns). Research demonstrates >93% accuracy at identifying applications through encrypted VPN tunnels using metadata alone. With Streaming DiLoCo, the traffic presents as a constant ~76 Mbps symmetric flow rather than periodic bursts, which eliminates the most obvious fingerprint. However, several features remain distinctive even through encryption: the extreme constancy of bandwidth over days or weeks (unlike normal internet traffic, which has characteristic micro-variations), near-perfect upload/download symmetry (~38 Mbps in each direction, a pattern produced by almost no common legitimate application), and correlation across multiple endpoints (72 nodes all maintaining identical bandwidth profiles with correlated start/stop times). The sustained ~76 Mbps throughput is not unusual for an individual internet-connected server, but the combination of constancy, symmetry, and multi-node correlation is.
 - **Nodes are geographically distributed:** No physical clustering, power draw anomaly, or thermal signature to detect via satellite.
 - **Each node is individually legitimate:** A 48-GPU cluster is common in research labs, gaming companies, and cloud providers.
-- **Potential fingerprint:** The sync traffic has a highly regular cadence (every ~100 minutes, identical payload sizes). Traffic analysis at the ISP level could detect this pattern, but it requires monitoring encrypted flow metadata across many nodes simultaneously.
+- **Traffic fingerprinting is a well-studied attack class:** Encrypted traffic classification is a mature research field with demonstrated high accuracy even against VPN and Tor traffic. While Streaming DiLoCo eliminates the periodic synchronization "heartbeat" that would be trivial to detect, the remaining features (constant symmetric bandwidth, multi-endpoint correlation, packet-level uniformity) shift the detection problem rather than eliminating it. Multi-endpoint correlation — observing that dozens of geographically distributed nodes maintain identical bandwidth profiles — is the hardest feature for an evader to disguise, and would be visible to an enforcement body with access to ISP-level flow data across multiple jurisdictions.
 
 ### 6.4 The Treaty Paradoxically Extends the Evasion Window
 
@@ -276,13 +276,13 @@ For non-state actors, the financial barrier is the primary practical constraint:
 |:--|:--|
 | **Minimum nodes to reach 10^24 FLOP** | **4 nodes** (~200 A100s, ~$3M) |
 | **Reference scenario (72 nodes, flat DiLoCo)** | **1.75 x 10^25 C_local** (17.5x threshold), **1.55 x 10^25 C_quality** |
-| **Optimistic/conservative range (72 nodes)** | 1.70-1.79 x 10^25 C_local (17.0-17.9x) |
+| **Uncertainty range (72 nodes)** | ~7-23x threshold (central estimate 17.5x; range reflects MFU, uptime, straggler, and convergence uncertainties) |
 | **Model trained (72 nodes, flat)** | 240B dense, 14.2T tokens, 2.3x overtraining |
 | **Best quality at 4,000 nodes (PP-DiLoCo)** | **2.75 x 10^26 C_quality** (960B, 4 PP stages, 2.6x better than flat) |
 | **Algorithmic efficiency** | ~86% expected (range: 83-88%) |
 | **Confidence in 16x pseudo-gradient compression** | High (FP4 validated to 15B; penalty ~2% expected) |
 | **Bottleneck** | Network bandwidth at low H; compute-bound when H is optimized |
-| **Detection** | Challenging: low-bandwidth encrypted traffic, no physical signature |
+| **Detection** | Challenging: encrypted traffic with no physical signature, but traffic fingerprinting via metadata (constancy, symmetry, multi-node correlation) is feasible |
 | **Enforcement time pressure** | 6 months still yields 5.8x threshold at 72 nodes |
 | **Financial barrier** | $3M (easy to hide) to $52M (moderate) to $3B (state-actor) |
 
