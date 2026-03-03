@@ -12,12 +12,12 @@ import math
 
 # Node configurations (all under 16 H100-equivalents = 15,840 TFLOPS FP16)
 CONFIGS = {
-    "48x A100 80GB": {
-        "pflops": 48 * 312e12 / 1e15,   # 48 x 312 TFLOPS = 14.976 PFLOPS
-        "vram_gb": 48 * 80,              # 3,840 GB
-        "gpu_count": 48,
+    "50x A100 80GB": {
+        "pflops": 50 * 312e12 / 1e15,   # 50 x 312 TFLOPS = 15.600 PFLOPS
+        "vram_gb": 50 * 80,              # 4,000 GB
+        "gpu_count": 50,
         "gpu_cost_usd": 15_000,          # ~$15k per A100 80GB (2025)
-        "h100_equiv": 48 * 312 / 990,    # ~15.1
+        "h100_equiv": 50 * 312 / 990,    # ~15.8
     },
     "16x GH200": {
         "pflops": 15.84,                 # 16 x 990 TFLOPS
@@ -89,9 +89,9 @@ CONFIGS_FP8 = {
 # A100 80GB: 312 TFLOPS FP16 each, $15k each, 80 GB VRAM each
 # Max GPUs = floor(threshold_h100_equiv * 990 / 312)
 LOWERED_CCC_A100 = {
-    "16 H100-eq (current)": {"gpu_count": 48, "pflops": 48 * 312e12 / 1e15,
-                              "vram_gb": 48 * 80, "gpu_cost_usd": 15_000,
-                              "h100_equiv": 48 * 312 / 990},
+    "16 H100-eq (current)": {"gpu_count": 50, "pflops": 50 * 312e12 / 1e15,
+                              "vram_gb": 50 * 80, "gpu_cost_usd": 15_000,
+                              "h100_equiv": 50 * 312 / 990},
     "8 H100-eq":  {"gpu_count": 25, "pflops": 25 * 312e12 / 1e15,
                     "vram_gb": 25 * 80, "gpu_cost_usd": 15_000,
                     "h100_equiv": 25 * 312 / 990},
@@ -407,7 +407,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "config": config_name,
         "n_nodes": n_nodes,
         "total_gpus": n_nodes * cfg["gpu_count"],
-        "h100_equiv_per_node": cfg["h100_equiv"],
+        "h100_equiv_per_node": cfg.get("h100_equiv", 0),
         "pflops_per_node": pflops,
         "vram_gb": vram_gb,
         "max_params_b": max_params_b,
@@ -441,14 +441,23 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
                                   bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
                                   bw_bps=None, latency_s=None,
                                   regional_bw_bps=None, regional_latency_s=None,
-                                  scenario=None):
-    """Compute metrics for hierarchical DiLoCo (two-tier topology)."""
-    if config_name in CONFIGS:
-        cfg = CONFIGS[config_name]
+                                  scenario=None, cfg=None, target_params_b=None):
+    """Compute metrics for hierarchical DiLoCo (two-tier topology).
+    If cfg is provided, use it directly instead of looking up config_name.
+    If target_params_b is specified, train that model size instead of max-VRAM.
+    Returns None if target_params_b exceeds single-node VRAM capacity."""
+    if cfg is None:
+        if config_name in CONFIGS:
+            cfg = CONFIGS[config_name]
+        else:
+            cfg = CONFIGS_FP8[config_name]
+            bytes_per_param = cfg["bytes_per_param"]
+            bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
     else:
-        cfg = CONFIGS_FP8[config_name]
-        bytes_per_param = cfg["bytes_per_param"]
-        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+        if "bytes_per_param" in cfg:
+            bytes_per_param = cfg["bytes_per_param"]
+        if "bits_per_pseudo_grad" in cfg:
+            bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
@@ -465,7 +474,9 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     vram_gb = cfg["vram_gb"]
 
     max_params_b = vram_gb / bytes_per_param
-    params_b = max_params_b
+    params_b = target_params_b if target_params_b is not None else max_params_b
+    if params_b > max_params_b:
+        return None
     params = params_b * 1e9
 
     effective_flops = pflops * 1e15 * MFU
@@ -480,9 +491,10 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     n_groups = n_nodes // nodes_per_group
     if n_groups < 2:
         # Fall back to flat DiLoCo
-        return compute_scenario(config_name, n_nodes, compression, time_seconds,
-                                bytes_per_param, bits_per_pseudo_grad,
-                                bw_bps, latency_s, scenario=scenario)
+        return compute_generic_scenario(cfg, n_nodes, compression, time_seconds,
+                                        bytes_per_param, bits_per_pseudo_grad,
+                                        bw_bps, latency_s, scenario=scenario,
+                                        target_params_b=target_params_b)
 
     # Regional sync (fast LAN)
     f_regional = straggler_factor(nodes_per_group)
@@ -522,12 +534,13 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
     return {
-        "config": config_name + " (hierarchical)",
+        "config": (config_name or "custom") + " (hierarchical)",
+        "mode": f"Hier {nodes_per_group}x{n_groups}",
         "n_nodes": n_nodes,
         "n_groups": n_groups,
         "nodes_per_group": nodes_per_group,
         "total_gpus": n_nodes * cfg["gpu_count"],
-        "h100_equiv_per_node": cfg["h100_equiv"],
+        "h100_equiv_per_node": cfg.get("h100_equiv", 0),
         "pflops_per_node": pflops,
         "vram_gb": vram_gb,
         "max_params_b": max_params_b,
@@ -668,7 +681,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
                                 bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
                                 time_seconds=None, bw_bps=None, latency_s=None,
                                 pp_bw_bps=None, pp_latency_s=None,
-                                scenario=None):
+                                scenario=None, cfg=None):
     """PP-Group DiLoCo: pipeline parallelism within co-located groups,
     DiLoCo synchronization across groups over WAN.
 
@@ -676,13 +689,20 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     pipeline stages. Each group of S co-located nodes holds the full model;
     G = N//S groups run DiLoCo outer loop.
 
+    If cfg is provided, use it directly instead of looking up config_name.
     Returns None if insufficient nodes to form at least 2 groups."""
-    if config_name in CONFIGS:
-        cfg = CONFIGS[config_name]
+    if cfg is None:
+        if config_name in CONFIGS:
+            cfg = CONFIGS[config_name]
+        else:
+            cfg = CONFIGS_FP8[config_name]
+            bytes_per_param = cfg["bytes_per_param"]
+            bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
     else:
-        cfg = CONFIGS_FP8[config_name]
-        bytes_per_param = cfg["bytes_per_param"]
-        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+        if "bytes_per_param" in cfg:
+            bytes_per_param = cfg["bytes_per_param"]
+        if "bits_per_pseudo_grad" in cfg:
+            bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
@@ -777,7 +797,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
     return {
-        "config": config_name + f" (PP-DiLoCo {pp_stages}x{n_groups})",
+        "config": (config_name or "custom") + f" (PP-DiLoCo {pp_stages}x{n_groups})",
         "mode": f"PP-Group DiLoCo ({pp_stages} stages x {n_groups} groups)",
         "n_nodes": n_nodes,
         "total_gpus": n_nodes * cfg["gpu_count"],
@@ -1009,11 +1029,11 @@ def print_10e27_comparison():
     scenarios = []
 
     # A: Flat DiLoCo, 48x A100 FP16, 16x compression
-    rA = compute_scenario("48x A100 80GB", 4000)
+    rA = compute_scenario("50x A100 80GB", 4000)
     scenarios.append(("A: Flat, A100 FP16, 16x comp", rA))
 
     # B: Hierarchical, 48x A100 FP16, 16x compression
-    rB = compute_hierarchical_scenario("48x A100 80GB", 4000)
+    rB = compute_hierarchical_scenario("50x A100 80GB", 4000)
     scenarios.append(("B: Hierarchical, A100 FP16, 16x", rB))
 
     # C: Flat DiLoCo, H100 FP8, 16x compression
@@ -1025,7 +1045,7 @@ def print_10e27_comparison():
     scenarios.append(("D: Hier, H100 FP8, 16x comp", rD))
 
     # E: Flat, A100 FP16, 100x compression
-    rE = compute_scenario("48x A100 80GB", 4000, compression=100)
+    rE = compute_scenario("50x A100 80GB", 4000, compression=100)
     scenarios.append(("E: Flat, A100 FP16, 100x comp", rE))
 
     # F: Hierarchical + 100x compression + FP8 H100
@@ -1033,12 +1053,12 @@ def print_10e27_comparison():
     scenarios.append(("F: Hier+100x, H100 FP8", rF))
 
     # G: MoE + EP (600B total, 100B active)
-    rG = compute_moe_ep_scenario("48x A100 80GB", 4000, total_params_b=600,
+    rG = compute_moe_ep_scenario("50x A100 80GB", 4000, total_params_b=600,
                                   active_params_b=100)
     scenarios.append(("G: MoE+EP 600B/100B, A100", rG))
 
     # H: PP-Group DiLoCo, 48x A100, 960B (optimal from sweep)
-    rH = compute_pp_diloco_scenario("48x A100 80GB", 4000, target_params_b=960)
+    rH = compute_pp_diloco_scenario("50x A100 80GB", 4000, target_params_b=960)
     if rH:
         scenarios.append(("H: PP-DiLoCo 960B, A100", rH))
 
@@ -1231,8 +1251,11 @@ def print_deployment_profiles(config_name, n_nodes, compression=COMPRESSION,
 def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
                              time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                              bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                             bw_bps=None, latency_s=None, scenario=None):
-    """Compute scenario for an arbitrary config dict (not from named configs)."""
+                             bw_bps=None, latency_s=None, scenario=None,
+                             target_params_b=None):
+    """Compute scenario for an arbitrary config dict (not from named configs).
+    If target_params_b is specified, train that model size instead of max-VRAM.
+    Returns None if target_params_b exceeds single-node VRAM capacity."""
     if "bytes_per_param" in cfg:
         bytes_per_param = cfg["bytes_per_param"]
     if "bits_per_pseudo_grad" in cfg:
@@ -1249,7 +1272,9 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     vram_gb = cfg["vram_gb"]
 
     max_params_b = vram_gb / bytes_per_param
-    params_b = max_params_b
+    params_b = target_params_b if target_params_b is not None else max_params_b
+    if params_b > max_params_b:
+        return None
     params = params_b * 1e9
 
     effective_flops = pflops * 1e15 * MFU
@@ -1333,6 +1358,120 @@ def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
                                     bits_per_pseudo_grad=bits_per_pseudo_grad)
 
 
+def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=100000):
+    """Binary search for minimum nodes where compute_fn(n)['c_quality'] >= target.
+    compute_fn(n) should return a result dict or None.
+    Returns the result dict at the minimum node count, or None if not achievable."""
+    # Check if 2 nodes suffices (minimum for DiLoCo)
+    r = compute_fn(2)
+    if r is None:
+        # Try larger node counts — PP modes need more nodes
+        lo, hi = 3, max_nodes
+    elif r["c_quality"] >= target_c_quality:
+        return r
+    else:
+        lo, hi = 3, max_nodes
+
+    # Find upper bound first
+    r_hi = compute_fn(hi)
+    if r_hi is None or r_hi["c_quality"] < target_c_quality:
+        return None  # Not achievable even at max_nodes
+
+    while lo < hi:
+        mid = (lo + hi) // 2
+        r = compute_fn(mid)
+        if r is not None and r["c_quality"] >= target_c_quality:
+            hi = mid
+        else:
+            lo = mid + 1
+
+    result = compute_fn(lo)
+    if result is not None and result["c_quality"] >= target_c_quality:
+        return result
+    return None
+
+
+def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSION,
+                                   bytes_per_param=BYTES_PER_PARAM,
+                                   bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                                   bw_bps=None, latency_s=None, scenario=None):
+    """Search over flat DiLoCo, hierarchical DiLoCo, and PP-Group DiLoCo at
+    various model sizes to find the minimum-cost configuration reaching
+    target_c_quality. All connections use the same bandwidth (WAN scenario).
+
+    Returns the best result dict, or None if no configuration reaches the target."""
+    if "bytes_per_param" in cfg:
+        bytes_per_param = cfg["bytes_per_param"]
+    if "bits_per_pseudo_grad" in cfg:
+        bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
+    if bw_bps is None:
+        bw_bps = BW_BPS
+    if latency_s is None:
+        latency_s = LATENCY_S
+
+    max_single_b = cfg["vram_gb"] / bytes_per_param
+    best = None
+
+    def update_best(result):
+        nonlocal best
+        if result is not None and (best is None or result["cost_usd"] < best["cost_usd"]):
+            best = result
+
+    # --- Flat DiLoCo at various model sizes ---
+    for frac in [0.25, 0.5, 0.75, 1.0]:
+        params_b = frac * max_single_b
+        if params_b < 1:
+            continue
+
+        def flat_fn(n, pb=params_b):
+            return compute_generic_scenario(
+                cfg, n, compression=compression, bytes_per_param=bytes_per_param,
+                bits_per_pseudo_grad=bits_per_pseudo_grad, bw_bps=bw_bps,
+                latency_s=latency_s, scenario=scenario, target_params_b=pb)
+
+        update_best(_binary_search_nodes_for_c_quality(flat_fn, target_c_quality))
+
+    # --- Hierarchical DiLoCo at various model sizes (WAN bandwidth for regional) ---
+    for frac in [0.25, 0.5, 0.75, 1.0]:
+        params_b = frac * max_single_b
+        if params_b < 1:
+            continue
+        for nodes_per_group in [4, 8, 16]:
+
+            def hier_fn(n, pb=params_b, npg=nodes_per_group):
+                return compute_hierarchical_scenario(
+                    None, n, nodes_per_group=npg, compression=compression,
+                    bytes_per_param=bytes_per_param,
+                    bits_per_pseudo_grad=bits_per_pseudo_grad,
+                    bw_bps=bw_bps, latency_s=latency_s,
+                    regional_bw_bps=bw_bps, regional_latency_s=latency_s,
+                    scenario=scenario, cfg=cfg, target_params_b=pb)
+
+            update_best(_binary_search_nodes_for_c_quality(hier_fn, target_c_quality))
+
+    # --- PP-Group DiLoCo at larger model sizes (WAN bandwidth for PP) ---
+    # Search over activation compression ratios: 4x (well-validated) and 10x (lower confidence)
+    for pp_comp in [PP_COMPRESSION, 10]:
+        for mult in [1.5, 2.0, 3.0, 4.0, 6.0, 8.0]:
+            params_b = mult * max_single_b
+            if params_b < 1:
+                continue
+
+            def pp_fn(n, pb=params_b, ppc=pp_comp):
+                return compute_pp_diloco_scenario(
+                    None, n, target_params_b=pb, pp_compression=ppc,
+                    compression=compression,
+                    bytes_per_param=bytes_per_param,
+                    bits_per_pseudo_grad=bits_per_pseudo_grad,
+                    bw_bps=bw_bps, latency_s=latency_s,
+                    pp_bw_bps=bw_bps, pp_latency_s=latency_s,
+                    scenario=scenario, cfg=cfg)
+
+            update_best(_binary_search_nodes_for_c_quality(pp_fn, target_c_quality))
+
+    return best
+
+
 def print_countermeasure_ccc_threshold():
     """Analyze effect of lowering CCC compute threshold."""
     print("\n" + "=" * 100)
@@ -1352,6 +1491,44 @@ def print_countermeasure_ccc_threshold():
         print(f"  {label:>20} | {cfg['gpu_count']:>9} | {cfg['pflops']:>7.2f} | "
               f"{cfg['vram_gb']:>5} GB | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f}")
 
+    # Optimized table: search over flat, hierarchical, and PP-DiLoCo
+    print(f"\n  Optimal evasion config for each C_quality target (all links 100 Mbps / 100 ms):")
+    print(f"\n  {'CCC Threshold':>20} | {'Target':>7} | {'Nodes':>7} | {'Cost':>8} | "
+          f"{'Mode':>22} | {'Model':>7} | {'OT':>5} | {'eta':>5} | {'C_quality':>10}")
+    print("  " + "-" * 115)
+
+    for label, cfg in LOWERED_CCC_A100.items():
+        for i, target in enumerate(targets):
+            r = find_optimal_config_for_target(cfg, target)
+            if r is None:
+                print(f"  {label:>20} | {target_labels[i]:>7} | {'N/A':>7} | {'N/A':>8} | "
+                      f"{'N/A':>22} | {'N/A':>7} | {'N/A':>5} | {'N/A':>5} | {'N/A':>10}")
+            else:
+                cost = r["cost_usd"]
+                cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+                # Determine mode description
+                if "mode" in r and "PP" in r.get("mode", ""):
+                    mode = r["mode"]
+                    pp_comp = r.get("pp_compression", PP_COMPRESSION)
+                    if pp_comp != PP_COMPRESSION:
+                        mode += f" act{pp_comp}x"
+                elif "mode" in r:
+                    mode = r["mode"]
+                elif "n_groups" in r and "nodes_per_group" in r:
+                    mode = f"Hier {r['nodes_per_group']}x{r['n_groups']}"
+                else:
+                    mode = "Flat DiLoCo"
+                params_b = r.get("params_b", r.get("max_params_b", 0))
+                ot = r.get("overtraining_ratio", 0)
+                eta = r.get("eta", 0)
+                c_q = r.get("c_quality", 0)
+                ot_str = f"{ot:.1f}x" if ot < 100 else f"{ot:.0f}x"
+                print(f"  {label:>20} | {target_labels[i]:>7} | {r['n_nodes']:>7,} | {cost_str:>8} | "
+                      f"{mode:>22} | {params_b:>5.0f}B | {ot_str:>5} | {eta:>5.3f} | {c_q:>10.2e}")
+        print("  " + "-" * 115)
+
+    # Also print the old flat-only table for comparison
+    print(f"\n  [Old table for comparison — flat DiLoCo only, targeting C_local not C_quality:]")
     print(f"\n  {'CCC Threshold':>20} | ", end="")
     for tl in target_labels:
         print(f"{'N->' + tl:>18} | {'Cost':>8} | ", end="")
@@ -1399,7 +1576,7 @@ def print_countermeasure_memory_threshold():
     print("COUNTERMEASURE: ADDING MEMORY (VRAM) THRESHOLD TO CCC DEFINITION")
     print("=" * 100)
 
-    print("\n  Current exploit: 48x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv (under 16)")
+    print("\n  Current exploit: 50x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv (under 16)")
     print("  Adding a VRAM threshold constrains the max node to min(compute_limit, memory_limit)")
 
     targets = [1e24, 1e25, 1e26]
@@ -1414,7 +1591,7 @@ def print_countermeasure_memory_threshold():
 
     for mem_limit in MEMORY_THRESHOLDS_GB:
         # Max A100 80GB GPUs under both compute (16 H100-eq) and memory limits
-        max_by_compute = 48  # floor(16 * 990 / 312) = 50, but we use 48 to stay under
+        max_by_compute = 50  # floor(16 * 990 / 312) = 50
         max_by_memory = mem_limit // 80  # 80 GB per A100
         n_gpus = min(max_by_compute, max_by_memory)
         if n_gpus < 1:
@@ -1533,10 +1710,10 @@ if __name__ == "__main__":
     # ── PART 1: Existing analysis (sub-threshold evasion) ────────────────────
 
     # Primary analysis: 48x A100
-    print_config_summary("48x A100 80GB")
-    print_results_table("48x A100 80GB")
-    print_detailed("48x A100 80GB", 4)
-    print_detailed("48x A100 80GB", 72)
+    print_config_summary("50x A100 80GB")
+    print_results_table("50x A100 80GB")
+    print_detailed("50x A100 80GB", 4)
+    print_detailed("50x A100 80GB", 72)
 
     # Secondary: 16x GH200
     print_config_summary("16x GH200")
@@ -1555,11 +1732,11 @@ if __name__ == "__main__":
 
     # Large-scale flat DiLoCo
     print("\n--- A: Flat DiLoCo, 48x A100 FP16, 16x compression ---")
-    print_large_scale_table("48x A100 80GB")
+    print_large_scale_table("50x A100 80GB")
 
     # Hierarchical DiLoCo
     print(f"\n--- B: Hierarchical DiLoCo (groups of {NODES_PER_GROUP}), 48x A100 FP16, 16x ---")
-    print_hierarchical_table("48x A100 80GB")
+    print_hierarchical_table("50x A100 80GB")
 
     # FP8 H100
     print("\n--- C: Flat DiLoCo, 16x H100 FP8, 16x compression ---")
@@ -1571,7 +1748,7 @@ if __name__ == "__main__":
 
     # 100x compression flat
     print("\n--- E: Flat DiLoCo, 48x A100 FP16, 100x compression ---")
-    print_large_scale_table("48x A100 80GB", compression=100)
+    print_large_scale_table("50x A100 80GB", compression=100)
 
     # Hierarchical + 100x + FP8
     print(f"\n--- F: Hierarchical + 100x compression, 16x H100 FP8 ---")
@@ -1580,7 +1757,7 @@ if __name__ == "__main__":
     # MoE + EP
     print("\n--- G: MoE + Expert Parallelism (600B total / 100B active) ---")
     for n in [72, 500, 2000, 4000]:
-        r = compute_moe_ep_scenario("48x A100 80GB", n, total_params_b=600,
+        r = compute_moe_ep_scenario("50x A100 80GB", n, total_params_b=600,
                                      active_params_b=100)
         cost = r['cost_usd']
         cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
@@ -1597,9 +1774,9 @@ if __name__ == "__main__":
     print("PART 3: ENFORCEMENT TIME SENSITIVITY")
     print("=" * 80)
 
-    print_time_sensitivity("48x A100 80GB", 4)
-    print_time_sensitivity("48x A100 80GB", 72)
-    print_time_sensitivity("48x A100 80GB", 4000)
+    print_time_sensitivity("50x A100 80GB", 4)
+    print_time_sensitivity("50x A100 80GB", 72)
+    print_time_sensitivity("50x A100 80GB", 4000)
     print_time_sensitivity("16x H100 FP8", 2000)
 
     # ── PART 4: Network sensitivity analysis ─────────────────────────────────
@@ -1614,13 +1791,13 @@ if __name__ == "__main__":
     print("-" * 80)
 
     # Small-scale evasion (72 nodes, 48x A100, reaching for 10^25)
-    print_bandwidth_sensitivity("48x A100 80GB", 72)
+    print_bandwidth_sensitivity("50x A100 80GB", 72)
 
     # Medium-scale (500 nodes, targeting 10^26)
-    print_bandwidth_sensitivity("48x A100 80GB", 500)
+    print_bandwidth_sensitivity("50x A100 80GB", 500)
 
     # Large-scale flat (4000 nodes A100, targeting 10^27)
-    print_bandwidth_sensitivity("48x A100 80GB", 4000)
+    print_bandwidth_sensitivity("50x A100 80GB", 4000)
 
     # Large-scale FP8 flat (2000 nodes H100 FP8, targeting 10^27)
     print_bandwidth_sensitivity("16x H100 FP8", 2000)
@@ -1635,10 +1812,10 @@ if __name__ == "__main__":
     print("-" * 80)
 
     # Reference: 72 nodes (10^25 target)
-    print_latency_sensitivity("48x A100 80GB", 72)
+    print_latency_sensitivity("50x A100 80GB", 72)
 
     # 500 nodes (10^26 target)
-    print_latency_sensitivity("48x A100 80GB", 500)
+    print_latency_sensitivity("50x A100 80GB", 500)
 
     # 2000 nodes H100 FP8 flat (10^27 target)
     print_latency_sensitivity("16x H100 FP8", 2000)
@@ -1653,10 +1830,10 @@ if __name__ == "__main__":
     print("-" * 80)
 
     # 72 nodes (sub-$100M evasion)
-    print_deployment_profiles("48x A100 80GB", 72)
+    print_deployment_profiles("50x A100 80GB", 72)
 
     # 500 nodes (10^26 target)
-    print_deployment_profiles("48x A100 80GB", 500)
+    print_deployment_profiles("50x A100 80GB", 500)
 
     # 2000 nodes FP8 (10^27 target) — flat
     print_deployment_profiles("16x H100 FP8", 2000)
@@ -1701,23 +1878,23 @@ if __name__ == "__main__":
     print(f"   Ratio: {ratio_fp8:.2f}x (expected ~2x): {'PASS' if 1.8 < ratio_fp8 < 2.5 else 'CHECK'}")
 
     # Check 5: Hierarchical eta > flat eta at large N
-    r_flat = compute_scenario("48x A100 80GB", 4000)
-    r_hier = compute_hierarchical_scenario("48x A100 80GB", 4000)
+    r_flat = compute_scenario("50x A100 80GB", 4000)
+    r_hier = compute_hierarchical_scenario("50x A100 80GB", 4000)
     print(f"\n5. Hierarchical vs flat eta at N=4000:")
     print(f"   Flat: eta={r_flat['eta']:.4f} (H={r_flat['h_min']})")
     print(f"   Hier: eta={r_hier['eta']:.4f} (H_eff={r_hier['h_eff']:.1f})")
     print(f"   Improvement: {(r_hier['eta']-r_flat['eta'])*100:.1f}pp: {'PASS' if r_hier['eta'] > r_flat['eta'] else 'CHECK'}")
 
     # Check 6: MoE+EP memory fits
-    r_moe = compute_moe_ep_scenario("48x A100 80GB", 72, total_params_b=600,
+    r_moe = compute_moe_ep_scenario("50x A100 80GB", 72, total_params_b=600,
                                      active_params_b=100)
     print(f"\n6. MoE+EP memory check (600B MoE, N=72, 48xA100):")
     print(f"   Per-node memory: {r_moe['mem_node_gb']:.0f} GB (VRAM: {r_moe['vram_gb']} GB)")
     print(f"   Fits: {r_moe['fits_on_node']}: {'PASS' if r_moe['fits_on_node'] else 'FAIL'}")
 
     # Check 7: Time scaling (C_local at 6mo = C_local at 18mo * 6/18)
-    r_full = compute_scenario("48x A100 80GB", 72)
-    r_half = compute_scenario("48x A100 80GB", 72, time_seconds=TIME_VARIANTS["6 months"])
+    r_full = compute_scenario("50x A100 80GB", 72)
+    r_half = compute_scenario("50x A100 80GB", 72, time_seconds=TIME_VARIANTS["6 months"])
     ratio_time = r_half['c_local'] / r_full['c_local']
     print(f"\n7. Time scaling check (6mo vs 1.5yr):")
     print(f"   6mo: {r_half['c_local']:.2e}, 1.5yr: {r_full['c_local']:.2e}")
@@ -1746,7 +1923,7 @@ if __name__ == "__main__":
     print(f"    {'PASS' if eta_at_opt > 0.99 else 'CHECK'}")
 
     # Check 11: C_quality <= C_local always
-    r_ot = compute_scenario("48x A100 80GB", 500)
+    r_ot = compute_scenario("50x A100 80GB", 500)
     print(f"\n11. C_quality <= C_local check (500 nodes, 48xA100):")
     print(f"    C_local = {r_ot['c_local']:.2e}, C_quality = {r_ot['c_quality']:.2e}")
     print(f"    {'PASS' if r_ot['c_quality'] <= r_ot['c_local'] else 'FAIL'}")
@@ -1782,12 +1959,12 @@ if __name__ == "__main__":
 
     # Key scenarios under all three quality assumptions
     key_scenarios = [
-        ("72 nodes, 48xA100, 16x comp", "48x A100 80GB", 72, 16, False),
-        ("500 nodes, 48xA100, 16x comp", "48x A100 80GB", 500, 16, False),
-        ("4000 nodes, 48xA100, 16x comp", "48x A100 80GB", 4000, 16, False),
+        ("72 nodes, 48xA100, 16x comp", "50x A100 80GB", 72, 16, False),
+        ("500 nodes, 48xA100, 16x comp", "50x A100 80GB", 500, 16, False),
+        ("4000 nodes, 48xA100, 16x comp", "50x A100 80GB", 4000, 16, False),
         ("2000 nodes, H100 FP8, 16x comp", "16x H100 FP8", 2000, 16, False),
         ("2000 nodes, H100 FP8, 100x hier", "16x H100 FP8", 2000, 100, True),
-        ("4000 nodes, 48xA100, 100x comp", "48x A100 80GB", 4000, 100, False),
+        ("4000 nodes, 48xA100, 100x comp", "50x A100 80GB", 4000, 100, False),
     ]
 
     print(f"\n  {'Scenario':>40} | {'Opt eta':>7} | {'Opt C_local':>11} | "
@@ -1815,7 +1992,7 @@ if __name__ == "__main__":
     print("  Compare to PART 4 results (which used optimistic/no compression quality)")
 
     for label, cfg_name, n, comp, hier in [
-        ("72 nodes, 48xA100, 16x", "48x A100 80GB", 72, 16, False),
+        ("72 nodes, 48xA100, 16x", "50x A100 80GB", 72, 16, False),
         ("2000 nodes, H100 FP8, hier+100x", "16x H100 FP8", 2000, 100, True),
     ]:
         print(f"\n  {label}:")
@@ -1849,9 +2026,9 @@ if __name__ == "__main__":
 
     # Key node counts for model size sweep
     sweep_configs = [
-        ("48x A100 80GB", 72),
-        ("48x A100 80GB", 500),
-        ("48x A100 80GB", 4000),
+        ("50x A100 80GB", 72),
+        ("50x A100 80GB", 500),
+        ("50x A100 80GB", 4000),
         ("16x H100 FP8", 2000),
     ]
 

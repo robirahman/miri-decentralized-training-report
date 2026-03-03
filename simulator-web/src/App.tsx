@@ -1,5 +1,82 @@
 import { useState, useEffect } from 'react'
 
+// --- Quality factor helpers (matching evasion_calculator.py) ---
+
+const COMPRESSION_QUALITY: Record<number, number> = {
+  1: 1.00, 4: 1.00, 16: 0.98, 100: 0.95,
+}
+
+const ACTIVATION_COMPRESSION_QUALITY: Record<number, number> = {
+  1: 1.00, 2: 1.00, 4: 0.995, 10: 0.98,
+}
+
+/** Log-interpolate quality tables (matching _interpolate_quality in Python). */
+function interpolateQuality(table: Record<number, number>, ratio: number): number {
+  if (ratio <= 1) return 1.0
+  const keys = Object.keys(table).map(Number).sort((a, b) => a - b)
+  if (ratio <= keys[0]) return table[keys[0]]
+  if (ratio >= keys[keys.length - 1]) return table[keys[keys.length - 1]]
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (ratio >= keys[i] && ratio <= keys[i + 1]) {
+      const t = Math.log(ratio / keys[i]) / Math.log(keys[i + 1] / keys[i])
+      return table[keys[i]] * (1 - t) + table[keys[i + 1]] * t
+    }
+  }
+  return table[keys[keys.length - 1]]
+}
+
+/** Compression quality: penalty from pseudo-gradient compression. */
+function compressionQuality(compressionRatio: number): number {
+  return interpolateQuality(COMPRESSION_QUALITY, compressionRatio)
+}
+
+/** Replica penalty: penalty from averaging multiple replicas' pseudo-gradients. */
+function replicaPenalty(nReplicas: number, paramsBillion: number): number {
+  if (nReplicas <= 1) return 1.0
+  const basePerDoubling = 0.005
+  const scaleAdj = Math.min(2.4, paramsBillion) / Math.max(paramsBillion, 0.1)
+  const penalty = basePerDoubling * scaleAdj * Math.log2(nReplicas)
+  return Math.max(0.85, 1.0 - penalty)
+}
+
+/** Activation compression quality: errors compound at each PP stage boundary. */
+function activationCompressionQualityFn(ppCompressionRatio: number, stages: number): number {
+  if (ppCompressionRatio <= 1 || stages <= 1) return 1.0
+  const perBoundary = interpolateQuality(ACTIVATION_COMPRESSION_QUALITY, ppCompressionRatio)
+  const nBoundaries = 2 * (stages - 1)
+  return Math.pow(perBoundary, nBoundaries)
+}
+
+// --- Chinchilla efficiency (matching evasion_calculator.py) ---
+const CHIN_E = 1.8172, CHIN_A = 482.01, CHIN_ALPHA = 0.3478
+const CHIN_B = 2085.43, CHIN_BETA = 0.3658
+const CHINCHILLA_TOKENS_PER_PARAM = 25.6
+
+function chinchillaLoss(params: number, tokens: number): number {
+  if (params <= 0 || tokens <= 0) return Infinity
+  return CHIN_E + CHIN_A * Math.pow(params, -CHIN_ALPHA) + CHIN_B * Math.pow(tokens, -CHIN_BETA)
+}
+
+function chinchillaOptimalAllocation(cFlop: number): [number, number] {
+  const nOpt = Math.sqrt(cFlop / (6 * CHINCHILLA_TOKENS_PER_PARAM))
+  const dOpt = CHINCHILLA_TOKENS_PER_PARAM * nOpt
+  return [nOpt, dOpt]
+}
+
+/** Fraction of compute that is 'effective' vs Chinchilla-optimal allocation. */
+function chinchillaEfficiency(params: number, tokens: number, cFlop: number): number {
+  const lActual = chinchillaLoss(params, tokens)
+  let lo = 1e10, hi = cFlop * 10
+  for (let i = 0; i < 200; i++) {
+    const mid = Math.sqrt(lo * hi)
+    const [nMid, dMid] = chinchillaOptimalAllocation(mid)
+    const lMid = chinchillaLoss(nMid, dMid)
+    if (lMid > lActual) lo = mid; else hi = mid
+  }
+  const cEffective = Math.sqrt(lo * hi)
+  return Math.min(1.0, cEffective / cFlop)
+}
+
 const Tooltip = ({ text }: { text: string }) => (
   <div className="tooltip-container">
     ⓘ
@@ -150,7 +227,10 @@ function App() {
     const baseAlpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
     // Strategy: Threshold aggregation is faster but less efficient per token (staleness)
     const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
-    const algorithmicEfficiency = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
+    const etaH = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
+    const etaCompression = compressionQuality(compression)
+    const etaReplicas = replicaPenalty(effectiveNodes, parameters / 1e9)
+    const algorithmicEfficiency = etaH * etaCompression * etaReplicas
     
     // 5. Straggler & Congestion Penalty
     const getStragglerFactor = (n: number) => {
@@ -248,9 +328,13 @@ function App() {
       }
     }
 
+    // Activation compression quality penalty (only for PP mode)
+    const etaActivation = isSharded ? activationCompressionQualityFn(ppCompression, ppStages) : 1.0
+    const totalEfficiency = algorithmicEfficiency * etaActivation
+
     // Effective compute time accounts for algorithmic penalty
     const totalTimeDays = totalTimeSeconds / (24 * 3600)
-    const effectiveDays = totalTimeDays / algorithmicEfficiency
+    const effectiveDays = totalTimeDays / totalEfficiency
     const effectiveSeconds = effectiveDays * 24 * 3600
 
     // Global Utilization Metrics (End-to-End)
@@ -260,6 +344,10 @@ function App() {
     const hardwareMaxFlops = numNodes * (pflopsPerNode * 1e15) * effectiveSeconds
     const globalMfu = (theoreticalFlops / hardwareMaxFlops)
     const globalHfu = globalMfu / 0.8 // MFU is ~80% of HFU per research
+
+    // Chinchilla quality: penalizes over/under-training relative to optimal allocation
+    const etaChinchilla = chinchillaEfficiency(parameters, tokens, theoreticalFlops)
+    const cQuality = theoreticalFlops * totalEfficiency * etaChinchilla
 
     // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
     // Formula: L = 1 / (gH + gS + gI)
@@ -288,7 +376,12 @@ function App() {
       computeBlockSec: computeBlockSec.toFixed(2),
       days: effectiveDays.toFixed(2),
       rawDays: totalTimeDays.toFixed(2),
-      efficiency: (algorithmicEfficiency * 100).toFixed(1),
+      efficiency: (totalEfficiency * 100).toFixed(1),
+      etaH: (etaH * 100).toFixed(1),
+      etaCompression: (etaCompression * 100).toFixed(1),
+      etaReplicas: (etaReplicas * 100).toFixed(1),
+      etaActivation: (etaActivation * 100).toFixed(1),
+      etaChinchilla: (etaChinchilla * 100).toFixed(1),
       globalMfu: (globalMfu * 100).toFixed(1),
       globalHfu: (globalHfu * 100).toFixed(1),
       isSharded,
@@ -302,6 +395,7 @@ function App() {
       maxParamsFP4: (maxParamsFP4 / 1e9).toFixed(0),
       hardwareFlops: hardwareMaxFlops,
       localEquivFlops: theoreticalFlops,
+      cQuality,
       maxDays: maxDays.toFixed(0),
       bottleneck: (globalCommSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
       feasibility: effectiveDays < maxDays ? "Feasible" : `Impractical (>${maxDays.toFixed(0)} days)`
@@ -729,7 +823,8 @@ function App() {
                 <h1 style={{ color: results.days < 365 ? '#10b981' : '#f43f5e', margin: 0 }}>{results.days} Days</h1>
                 <p style={{ fontWeight: 600, marginTop: '8px' }}>{results.feasibility}</p>
                 <div style={{ fontSize: '0.85em', color: '#64748b', marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span>{results.efficiency}% algorithmic efficiency</span>
+                  <span>{results.efficiency}% total efficiency ({results.etaH}% sync × {results.etaCompression}% compress{results.etaReplicas !== '100.0' ? ` × ${results.etaReplicas}% replica` : ''}{results.etaActivation !== '100.0' ? ` × ${results.etaActivation}% act.compress` : ''})</span>
+                  <span>Chinchilla efficiency: {results.etaChinchilla}%</span>
                   <span>Global MFU: <span style={{ color: results.globalMfu < 20 ? '#f43f5e' : '#94a3b8' }}>{results.globalMfu}%</span> | HFU: {results.globalHfu}%</span>
                 </div>
                 {results.globalMfu < 20 && (
@@ -749,7 +844,7 @@ function App() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginTop: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', marginTop: '20px' }}>
               <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                 <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Hardware FLOPs Performed
@@ -762,10 +857,19 @@ function App() {
               <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                 <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Local-Equivalent Compute
-                  <Tooltip text="Compute needed to train the same model to the same performance on a single ideal cluster with no distributed training overhead (no DiLoCo penalty, no compression loss, no straggler waste, no pipeline bubbles)." />
+                  <Tooltip text="Compute needed to train the same model to the same performance on a single ideal cluster with no distributed training overhead. C_local = 6 × params × tokens." />
                 </p>
                 <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#e2e8f0' }}>
                   {formatFlops(results.localEquivFlops)} FLOP
+                </p>
+              </div>
+              <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #38bdf8' }}>
+                <p style={{ color: '#38bdf8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Quality-Adjusted Compute
+                  <Tooltip text="C_quality = C_local × eta_total × eta_Chinchilla. Accounts for DiLoCo efficiency loss, compression quality, replica penalty, activation compression, and Chinchilla sub-optimality. This is the effective compute for comparison with centralized training." />
+                </p>
+                <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#38bdf8' }}>
+                  {formatFlops(results.cQuality)} FLOP
                 </p>
               </div>
             </div>
