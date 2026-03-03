@@ -485,7 +485,7 @@ With the expected compression quality scenario, flat 16x DiLoCo at 2,000 nodes a
 
 The sensitivity analysis reveals three governance-critical findings:
 
-**1. DiLoCo is bandwidth-insensitive by design.** The protocol absorbs low bandwidth by increasing the synchronization interval $H$. Because efficiency depends on $\log_{10}(H)$, a 10x increase in $H$ (needed to compensate for 10x lower bandwidth) costs only a constant reduction in $\eta$. Across the full range from 10 Mbps to 1 Gbps, C_local varies by only 12% (flat, 16x) to 5% (hierarchical+100x). Including compression quality, the total gap between optimal and worst-case is **12-14%** for 16x and **14-18%** for 100x.
+**1. The model predicts DiLoCo is bandwidth-insensitive.** The protocol absorbs low bandwidth by increasing the synchronization interval $H$. Because efficiency depends on $\log_{10}(H)$, a 10x increase in $H$ (needed to compensate for 10x lower bandwidth) costs only a constant reduction in $\eta$. Across the full range from 10 Mbps to 1 Gbps, the model predicts C_local varies by only 12% (flat, 16x) to 5% (hierarchical+100x). Including compression quality, the predicted total gap between optimal and worst-case is **12-14%** for 16x and **14-18%** for 100x. However, this prediction relies on extrapolations not yet validated at the target scale: no published distributed training project has operated below ~500 Mbps (INTELLECT-1 used 500 Mbps-4 Gbps), and at 10 Mbps the 72-node scenario requires H≈2,000 inner steps — beyond the H≤1,000 range tested in DiLoCo scaling experiments. The 16x compression stack (FP4 quantization + sparsification) has also not been validated as a combined system at 100B+ scale. The qualitative conclusion — that DiLoCo is far less bandwidth-sensitive than data-parallel training — is robust, but the precise 12-14% figure should be treated as a model estimate rather than an empirical result.
 
 **2. Latency is irrelevant to distributed training.** The sync volumes in frontier-scale training (Gbits to Tbits) make round-trip latency negligible. Even the Brazil-to-Southeast-Asia worst case (340 ms) has zero measurable impact. Geographical distribution is free — an evader needs no special network infrastructure.
 
@@ -493,7 +493,7 @@ The sensitivity analysis reveals three governance-critical findings:
 
 ## 10. Treaty Modifications to Close the Distributed Training Loophole
 
-The preceding sections establish three facts: (1) the CCC threshold is porous — DiLoCo enables sub-CCC nodes to collectively exceed the Strict Threshold with modest investment; (2) network conditions barely matter — even 10 Mbps consumer broadband suffices; (3) the existing enforcement mechanisms (chip tracking, financial monitoring) are the primary barriers, not the compute threshold itself. This section evaluates specific treaty modifications that could narrow or close the distributed training loophole.
+The preceding sections establish three facts: (1) the CCC threshold is porous — DiLoCo enables sub-CCC nodes to collectively exceed the Strict Threshold with modest investment; (2) the model predicts network conditions have limited impact — even 10 Mbps consumer broadband is estimated to reduce efficiency by only 12-14%, though this relies on compression and scaling assumptions not yet validated beyond 15B parameters; (3) the existing enforcement mechanisms (chip tracking, financial monitoring) are the primary barriers, not the compute threshold itself. This section evaluates specific treaty modifications that could narrow or close the distributed training loophole.
 
 ### 10.1 Lowering the CCC Compute Threshold
 
@@ -569,7 +569,7 @@ Section 9 established that DiLoCo is inherently bandwidth-insensitive. Could the
 | 72 nodes, A100 FP16, flat 16x | 1.75 x 10^25 | 1.64 x 10^25 | 6% |
 | 2,000 nodes, H100 FP8, hier+100x | 1.07 x 10^27 | 1.04 x 10^27 | 3% |
 
-A 10 Mbps cap reduces evasion capability by only 3-6% from baseline. The fundamental problem is DiLoCo's logarithmic bandwidth sensitivity: the evader needs 10x more inner steps but loses only one $\log_{10}$ unit of efficiency.
+The model predicts a 10 Mbps cap reduces evasion capability by only 3-6% from baseline. This estimate assumes compression ratios validated at much smaller scale (≤15B parameters) hold at 240B, and that H≈2,000 inner steps incur only the logarithmic penalty predicted by the efficiency formula. The actual penalty could be larger, but the fundamental dynamic — DiLoCo's logarithmic bandwidth sensitivity, where the evader needs 10x more inner steps but loses only one $\log_{10}$ unit of efficiency — means bandwidth caps alone are unlikely to prevent threshold exceedance.
 
 **Implementation options:** (a) Monitoring WAN connections at registered GPU facilities — lightest touch, provides a detection signal; (b) mandating ISP throttling for GPU facilities — more intrusive, constrains legitimate inference and cloud computing; (c) requiring network registration for AI chip facilities. Option (a) has value as a supplementary detection mechanism (Section 10.4) even though bandwidth *caps* are technically ineffective.
 
