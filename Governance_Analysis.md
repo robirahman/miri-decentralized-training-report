@@ -559,20 +559,24 @@ The current CCC threshold is defined solely by compute capacity. Section 6.5 ide
 
 A **memory-based registration threshold** would require CCC registration when aggregate accelerator VRAM exceeds a specified limit.
 
-**Impact of VRAM thresholds (combined with 16 H100-eq compute threshold):**
+**Optimal evasion configuration at each VRAM threshold** (quality-adjusted, searching over flat DiLoCo, hierarchical DiLoCo, and PP-Group DiLoCo at various model sizes; all links 100 Mbps / 100 ms):
 
-| VRAM Limit | Max A100s | VRAM | Max Model | Nodes for 10^24 | Cost | Nodes for 10^25 | Cost |
+| VRAM Limit | Target C_quality | Best Mode | Model | Nodes | Cost | OT Ratio | eta |
 |:--|:--|:--|:--|:--|:--|:--|:--|
-| No limit (current) | 50 | 4,000 GB | 250B | 4 | $3M | 41 | $31M |
-| 2 TB | 25 | 2,000 GB | 125B | 8 | $3M | 79 | $30M |
-| 1 TB | 12 | 960 GB | 60B | 16 | $3M | 161 | $29M |
-| 512 GB | 6 | 480 GB | 30B | 32 | $3M | 317 | $29M |
+| No limit (current) | 10^24 | Flat DiLoCo | 125B | 4 | $3M | 0.5x | 0.856 |
+| No limit (current) | 10^25 | Flat DiLoCo | 250B | 41 | $31M | 1.3x | 0.858 |
+| 2 TB | 10^24 | Flat DiLoCo | 94B | 8 | $3M | 0.9x | 0.869 |
+| 2 TB | 10^25 | Hier 16x8 | 125B | 132 | $50M | 8.1x | 0.870 |
+| 1 TB | 10^24 | Flat DiLoCo | 60B | 18 | $3M | 2.3x | 0.883 |
+| 1 TB | 10^25 | PP-DiLoCo (3 stages, act 10x) | 180B | 735 | $132M | 2.9x | 0.821 |
+| 512 GB | 10^24 | Flat DiLoCo | 30B | 84 | $8M | 21.5x | 0.892 |
+| 512 GB | 10^25 | PP-DiLoCo (6 stages, act 10x) | 180B | 2,304 | $207M | 3.4x | 0.732 |
 
-As with the compute threshold analysis in Section 10.1, the quality-adjusted cost of evasion increases at lower VRAM limits because the evader is forced into smaller models with worse Chinchilla efficiency, or must use PP-Group DiLoCo over WAN with substantial pipeline overhead. The memory threshold **closes the high-VRAM A100 exploit** and forces the evader into more costly and detectable configurations.
+Unlike the old flat-DiLoCo-only analysis (which showed costs *decreasing* at lower VRAM limits due to lower sync overhead on smaller models), this quality-adjusted search reveals the true cost structure. At 10^25 C_quality, the cost of evasion rises from **$31M** (no limit) to **$50M** (2 TB) to **$132M** (1 TB) to **$207M** (512 GB) — a **4-7x increase** at the most restrictive thresholds. This happens because the evader faces a dilemma: flat DiLoCo with a small model suffers severe Chinchilla-suboptimality (e.g., 21.5x overtraining at 30B), while PP-Group DiLoCo over 100 Mbps WAN incurs substantial pipeline bubble overhead and activation compression losses that compound across stage boundaries.
 
 **Collateral at each level:** A 1 TB limit catches 0 of 14 representative legitimate systems. A 512 GB limit catches 6 (all 8-GPU A100/H100 systems), bringing standard DGX systems and cloud instances under registration — these are standard equipment at institutions that have the resources to comply.
 
-**Assessment:** A memory threshold of **1-2 TB** is a reasonable, low-impact addition that closes the 50x A100 exploit without subjecting standard 8-GPU systems to registration.
+**Assessment:** A memory threshold of **1-2 TB** is the most effective single countermeasure identified in this analysis. It closes the high-VRAM A100 exploit, forces evasion costs up by 2-4x at 10^25 C_quality, and has zero collateral impact on legitimate systems at the 1 TB level.
 
 ### 10.3 Bandwidth Restrictions
 

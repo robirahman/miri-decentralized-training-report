@@ -1576,7 +1576,7 @@ def print_countermeasure_memory_threshold():
     print("COUNTERMEASURE: ADDING MEMORY (VRAM) THRESHOLD TO CCC DEFINITION")
     print("=" * 100)
 
-    print("\n  Current exploit: 50x A100 80GB = 3,840 GB VRAM at 15.1 H100-equiv (under 16)")
+    print("\n  Current exploit: 50x A100 80GB = 4,000 GB VRAM at 15.8 H100-equiv (under 16)")
     print("  Adding a VRAM threshold constrains the max node to min(compute_limit, memory_limit)")
 
     targets = [1e24, 1e25, 1e26]
@@ -1589,14 +1589,15 @@ def print_countermeasure_memory_threshold():
     print()
     print("  " + "-" * 140)
 
-    for mem_limit in MEMORY_THRESHOLDS_GB:
-        # Max A100 80GB GPUs under both compute (16 H100-eq) and memory limits
+    # Build configs for each memory threshold (A100)
+    # Include "no limit" (effective unlimited) as baseline
+    a100_mem_cfgs = []
+    for mem_limit in [99999] + sorted(MEMORY_THRESHOLDS_GB, reverse=True):
         max_by_compute = 50  # floor(16 * 990 / 312) = 50
         max_by_memory = mem_limit // 80  # 80 GB per A100
         n_gpus = min(max_by_compute, max_by_memory)
         if n_gpus < 1:
             n_gpus = 1
-
         cfg = {
             "gpu_count": n_gpus,
             "pflops": n_gpus * 312e12 / 1e15,
@@ -1605,16 +1606,54 @@ def print_countermeasure_memory_threshold():
             "h100_equiv": n_gpus * 312 / 990,
         }
         model_b = cfg["vram_gb"] / BYTES_PER_PARAM
+        a100_mem_cfgs.append((mem_limit, n_gpus, cfg, model_b))
 
-        print(f"  {mem_limit:>8} GB | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
+    for mem_limit, n_gpus, cfg, model_b in a100_mem_cfgs:
+        lbl = "No limit" if mem_limit >= 99999 else f"{mem_limit} GB"
+        print(f"  {lbl:>12} | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
               f"{cfg['pflops']:>7.2f} | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f} | ", end="")
-
         for target in targets:
             r = find_nodes_for_target(cfg, target)
             cost = r["cost_usd"]
             cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
             print(f"{r['n_nodes']:>10,} | {cost_str:>8} | ", end="")
         print()
+
+    # Optimized table: search over flat, hierarchical, and PP-DiLoCo (A100)
+    print(f"\n  Optimal evasion config for each C_quality target (all links 100 Mbps / 100 ms):")
+    print(f"\n  {'VRAM Limit':>12} | {'Target':>7} | {'Nodes':>7} | {'Cost':>8} | "
+          f"{'Mode':>22} | {'Model':>7} | {'OT':>5} | {'eta':>5} | {'C_quality':>10}")
+    print("  " + "-" * 115)
+
+    for mem_limit, n_gpus, cfg, model_b in a100_mem_cfgs:
+        label = f"{mem_limit} GB" if mem_limit < 99999 else "No limit"
+        for i, target in enumerate(targets):
+            r = find_optimal_config_for_target(cfg, target)
+            if r is None:
+                print(f"  {label:>12} | {target_labels[i]:>7} | {'N/A':>7} | {'N/A':>8} | "
+                      f"{'N/A':>22} | {'N/A':>7} | {'N/A':>5} | {'N/A':>5} | {'N/A':>10}")
+            else:
+                cost = r["cost_usd"]
+                cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+                if "mode" in r and "PP" in r.get("mode", ""):
+                    mode = r["mode"]
+                    pp_comp = r.get("pp_compression", PP_COMPRESSION)
+                    if pp_comp != PP_COMPRESSION:
+                        mode += f" act{pp_comp}x"
+                elif "mode" in r:
+                    mode = r["mode"]
+                elif "n_groups" in r and "nodes_per_group" in r:
+                    mode = f"Hier {r['nodes_per_group']}x{r['n_groups']}"
+                else:
+                    mode = "Flat DiLoCo"
+                params_b = r.get("params_b", r.get("max_params_b", 0))
+                ot = r.get("overtraining_ratio", 0)
+                eta = r.get("eta", 0)
+                c_q = r.get("c_quality", 0)
+                ot_str = f"{ot:.1f}x" if ot < 100 else f"{ot:.0f}x"
+                print(f"  {label:>12} | {target_labels[i]:>7} | {r['n_nodes']:>7,} | {cost_str:>8} | "
+                      f"{mode:>22} | {params_b:>5.0f}B | {ot_str:>5} | {eta:>5.3f} | {c_q:>10.2e}")
+        print("  " + "-" * 115)
 
     # Also show H100 FP8 under memory limits
     print(f"\n  H100 SXM (FP8) under memory limits:")
@@ -1625,13 +1664,13 @@ def print_countermeasure_memory_threshold():
     print()
     print("  " + "-" * 145)
 
-    for mem_limit in MEMORY_THRESHOLDS_GB:
+    h100_mem_cfgs = []
+    for mem_limit in [99999] + sorted(MEMORY_THRESHOLDS_GB, reverse=True):
         max_by_compute = 16
         max_by_memory = mem_limit // 80
         n_gpus = min(max_by_compute, max_by_memory)
         if n_gpus < 1:
             n_gpus = 1
-
         cfg = {
             "gpu_count": n_gpus,
             "pflops": n_gpus * 1980e12 / 1e15,
@@ -1643,16 +1682,54 @@ def print_countermeasure_memory_threshold():
             "bits_per_pseudo_grad": 8,
         }
         model_b = cfg["vram_gb"] / cfg["bytes_per_param"]
+        h100_mem_cfgs.append((mem_limit, n_gpus, cfg, model_b))
 
-        print(f"  {mem_limit:>8} GB | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
+    for mem_limit, n_gpus, cfg, model_b in h100_mem_cfgs:
+        lbl = "No limit" if mem_limit >= 99999 else f"{mem_limit} GB"
+        print(f"  {lbl:>12} | {n_gpus:>9} | {cfg['vram_gb']:>8} GB | "
               f"{cfg['pflops']:>10.2f} | {model_b:>7.0f}B | {cfg['h100_equiv']:>7.1f} | ", end="")
-
         for target in targets:
             r = find_nodes_for_target(cfg, target)
             cost = r["cost_usd"]
             cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
             print(f"{r['n_nodes']:>10,} | {cost_str:>8} | ", end="")
         print()
+
+    # Optimized table for H100 FP8
+    print(f"\n  Optimal H100 FP8 evasion config for each C_quality target:")
+    print(f"\n  {'VRAM Limit':>12} | {'Target':>7} | {'Nodes':>7} | {'Cost':>8} | "
+          f"{'Mode':>22} | {'Model':>7} | {'OT':>5} | {'eta':>5} | {'C_quality':>10}")
+    print("  " + "-" * 115)
+
+    for mem_limit, n_gpus, cfg, model_b in h100_mem_cfgs:
+        label = f"{mem_limit} GB" if mem_limit < 99999 else "No limit"
+        for i, target in enumerate(targets):
+            r = find_optimal_config_for_target(cfg, target)
+            if r is None:
+                print(f"  {label:>12} | {target_labels[i]:>7} | {'N/A':>7} | {'N/A':>8} | "
+                      f"{'N/A':>22} | {'N/A':>7} | {'N/A':>5} | {'N/A':>5} | {'N/A':>10}")
+            else:
+                cost = r["cost_usd"]
+                cost_str = f"${cost/1e9:.1f}B" if cost >= 1e9 else f"${cost/1e6:.0f}M"
+                if "mode" in r and "PP" in r.get("mode", ""):
+                    mode = r["mode"]
+                    pp_comp = r.get("pp_compression", PP_COMPRESSION)
+                    if pp_comp != PP_COMPRESSION:
+                        mode += f" act{pp_comp}x"
+                elif "mode" in r:
+                    mode = r["mode"]
+                elif "n_groups" in r and "nodes_per_group" in r:
+                    mode = f"Hier {r['nodes_per_group']}x{r['n_groups']}"
+                else:
+                    mode = "Flat DiLoCo"
+                params_b = r.get("params_b", r.get("max_params_b", 0))
+                ot = r.get("overtraining_ratio", 0)
+                eta = r.get("eta", 0)
+                c_q = r.get("c_quality", 0)
+                ot_str = f"{ot:.1f}x" if ot < 100 else f"{ot:.0f}x"
+                print(f"  {label:>12} | {target_labels[i]:>7} | {r['n_nodes']:>7,} | {cost_str:>8} | "
+                      f"{mode:>22} | {params_b:>5.0f}B | {ot_str:>5} | {eta:>5.3f} | {c_q:>10.2e}")
+        print("  " + "-" * 115)
 
 
 def print_collateral_damage():
