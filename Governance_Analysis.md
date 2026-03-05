@@ -97,9 +97,9 @@ where $S$ is the number of pipeline stages and $q_{\text{per-boundary}}$ is the 
 
 The default activation compression ratio is **4x** (4-bit quantization), which is well-validated in the literature. At 4x with 2 pipeline stages, $\eta_{\text{act}} = 0.995^2 = 0.990$; at 4x with 4 stages, $\eta_{\text{act}} = 0.995^6 = 0.970$. See [Compression Quality §6](Compression_Quality.md#6-activation-compression-evidence-for-pp-group-diloco) for the literature review.
 
-**Replica count penalty ($\eta_{\text{replicas}}$):** Averaging pseudo-gradients across many replicas introduces noise. Based on the [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) empirical data (M=8 costs ~1.2% at 2.4B parameters, with the penalty decreasing at larger model sizes), this factor is modeled as:
+**Replica count penalty ($\eta_{\text{replicas}}$):** Averaging pseudo-gradients across many replicas introduces noise. Based on the [DiLoCo Scaling Laws](https://arxiv.org/abs/2503.09799) empirical data (Table 4: M=8 costs ~1.1% loss penalty at 2.4B parameters, with the penalty decreasing at larger model sizes), this factor is modeled as:
 
-$$\eta_{\text{replicas}} = \max\!\left(0.85,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
+$$\eta_{\text{replicas}} = \max\!\left(0,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
 
 where $P_B$ is the model size in billions and $N$ is the number of replicas. For the primary 250B configuration, this penalty is negligible (<0.1% at 72 nodes, <0.3% at 500 nodes) because the denominator scales with model size. It becomes material only for very small models at very large replica counts.
 

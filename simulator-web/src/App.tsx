@@ -36,7 +36,7 @@ function replicaPenalty(nReplicas: number, paramsBillion: number): number {
   const basePerDoubling = 0.005
   const scaleAdj = Math.min(2.4, paramsBillion) / Math.max(paramsBillion, 0.1)
   const penalty = basePerDoubling * scaleAdj * Math.log2(nReplicas)
-  return Math.max(0.85, 1.0 - penalty)
+  return Math.max(0.0, 1.0 - penalty)
 }
 
 /** Activation compression quality: errors compound at each PP stage boundary. */
@@ -229,8 +229,7 @@ function App() {
     const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
     const etaH = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
     const etaCompression = compressionQuality(compression)
-    const etaReplicas = replicaPenalty(effectiveNodes, parameters / 1e9)
-    const algorithmicEfficiency = etaH * etaCompression * etaReplicas
+    // etaReplicas is computed after mode determination (PP-Group uses numGroups, not effectiveNodes)
     
     // 5. Straggler & Congestion Penalty
     const getStragglerFactor = (n: number) => {
@@ -327,6 +326,12 @@ function App() {
         totalTimeSeconds = totalOuterSteps * effectiveOuterTime
       }
     }
+
+    // Replica penalty: in PP-Group DiLoCo, replicas are groups, not individual nodes
+    const numPPGroupsForReplica = isSharded ? Math.floor(effectiveNodes / ppStages) : 0
+    const replicaCount = (isSharded && numPPGroupsForReplica >= 2) ? numPPGroupsForReplica : effectiveNodes
+    const etaReplicas = replicaPenalty(replicaCount, parameters / 1e9)
+    const algorithmicEfficiency = etaH * etaCompression * etaReplicas
 
     // Activation compression quality penalty (only for PP mode)
     const etaActivation = isSharded ? activationCompressionQualityFn(ppCompression, ppStages) : 1.0

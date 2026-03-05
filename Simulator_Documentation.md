@@ -373,15 +373,14 @@ For compression ratios between these thresholds, the simulator interpolates log-
 
 ### 4.7 Replica Count Penalty
 
-$$\eta_{\text{replicas}} = \max\!\left(0.85,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
+$$\eta_{\text{replicas}} = \max\!\left(0,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
 
-where $P_B$ is the model size in billions of parameters and $N$ is the number of replicas (nodes in flat DiLoCo, or groups in hierarchical DiLoCo).
+where $P_B$ is the model size in billions of parameters and $N$ is the number of replicas (nodes in flat DiLoCo, groups in PP-Group DiLoCo, or nodes in hierarchical DiLoCo).
 
 **Parameterization:**
 
 *   Base penalty: ~0.5% per doubling of replicas at 2.4B parameters.
 *   Scale adjustment: penalty decreases inversely with model size (larger models are more robust to multi-replica averaging).
-*   Floor of 85% prevents nonsensical extreme penalties at very high replica counts.
 
 **Example values:**
 
@@ -395,10 +394,10 @@ where $P_B$ is the model size in billions of parameters and $N$ is the number of
 | 4,000 | 0.940 | 0.986 | 0.999 | 1.000 |
 
 **Evidence:**
-*   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 5 shows that at 2.4B parameters, $M=8$ replicas incur ~1.2% penalty vs $M=1$. The penalty decreases with model size.
-*   [Epoch AI (2024)](https://epoch.ai/blog/training-compute-of-frontier-ai-models): projects that $M=10{,}000$ replicas would require ~6× FLOP multiplier, suggesting steep degradation at very high counts. The simulator's floor of 85% is conservative relative to this projection.
+*   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 4 shows that at 2.4B parameters with H=30, $M=8$ replicas incur ~1.1% loss penalty vs data-parallel (1.5% vs $M=1$). The penalty decreases with model size. Note: this is a *loss* penalty, not a direct FLOP penalty; converting through the Chinchilla scaling law gives a ~1.45× FLOP multiplier for this loss gap.
+*   [Epoch AI (2024)](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale): interprets the Charles et al. data as "increasing from 1 to 8 nodes is equivalent to a 1.5× decrease in training compute," and projects that $M=10{,}000$ replicas would require ~6× FLOP multiplier, suggesting steep degradation at very high counts.
 
-**Limitation:** The formula is calibrated to $M \leq 8$ at 2.4B scale. Extrapolation to $M=2{,}000+$ is weakly supported. The 85% floor is an engineering choice, not a literature-derived bound. At the 100B+ model sizes used in the governance analysis, the replica penalty is negligible (<0.1%) for all scenarios tested.
+**Limitation:** The formula is calibrated to $M \leq 8$ at 2.4B scale. Extrapolation to $M=2{,}000+$ is weakly supported. The formula treats the replica penalty as a linear FLOP multiplier (η=0.985 for M=8 at 2.4B), but the actual penalty when converted through scaling laws is much larger (~1.45× FLOP multiplier). At the 100B+ model sizes used in the governance analysis, the replica penalty is negligible (<0.1%) regardless of the conversion method, so this discrepancy does not affect the governance conclusions.
 
 ### 4.8 Activation Compression Quality
 
@@ -672,7 +671,7 @@ On top of precision, the user can apply further compression via quantization and
 6.  **PP mode only models forward activations.** Real pipeline parallelism also sends gradients backward through the pipeline, roughly doubling communication per micro-batch.
 7.  **EP memory model is simplified.** The EP memory reduction assumes a clean split between shared and expert parameters ($P_{\text{shared}} = P_{\text{active}}$). Real MoE architectures may have routing layers, load-balancing buffers, and token-drop buffers that add overhead beyond this estimate.
 8.  **Compression quality factors are extrapolations.** The $\eta_{\text{compression}}$ values at 16× and 100× are engineering estimates based on experiments at 512M–15B parameters (see §4.6). No published experiment has measured compression quality degradation at the 100B+ scale the simulator targets. The three-scenario approach (optimistic/expected/conservative) is designed to bound this uncertainty rather than resolve it.
-9.  **Replica penalty is weakly calibrated.** The $\eta_{\text{replicas}}$ formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. At the 100B+ scale used in the governance analysis, the penalty is negligible, but it could be significant at small model sizes with many replicas — a regime not targeted by this analysis.
+9.  **Replica penalty is weakly calibrated.** The $\eta_{\text{replicas}}$ formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. The formula treats the penalty as a linear FLOP multiplier, but the actual penalty (converted through Chinchilla scaling laws) is ~1.45× at M=8, 2.4B — much larger than the formula's 1.015×. At the 100B+ scale used in the governance analysis, the penalty is negligible regardless of conversion method, but the formula would significantly underestimate the penalty for small models (≤10B) with many replicas.
 10. **Compression quality and H are modeled as independent.** The three efficiency components ($\eta_H$, $\eta_{\text{compression}}$, $\eta_{\text{replicas}}$) are multiplied independently. In reality, larger H produces more divergent pseudo-gradients that may be harder to compress (negative interaction) or may have lower effective rank that compresses better (positive interaction). This interaction is not modeled.
 11. **Activation compression depth risk.** The activation compression quality model (Section 4.8) assumes independent, multiplicative errors at each pipeline boundary, yielding an exponential depth penalty $q^{2(S-1)}$. In practice, errors may correlate across boundaries (e.g., systematic quantization bias in certain feature dimensions), making the penalty either better or worse than the independent-error model predicts. For deep pipelines ($S \geq 5$), the compounded penalty exceeds 19% at 4x compression, which may be optimistic if errors are correlated or pessimistic if error cancellation occurs. No published work validates activation compression quality across multiple sequential pipeline boundaries.
 12. **Chinchilla scaling law extrapolation.** The Chinchilla loss function $L(N,D)$ from Besiroglu et al. (2024) is fit to dense transformer models in the 70M-16B parameter range. The simulator extrapolates this to 100B-1T scale models, MoE architectures, and non-standard training regimes (e.g., 3x Chinchilla overtraining). The $D^* = 25.6N$ optimal ratio assumes IID training data; with finite datasets and data repetition, the effective optimal ratio shifts downward. Additionally, the Chinchilla efficiency metric $\eta_{\text{chinchilla}}$ uses binary search to match loss curves, which assumes the loss function is monotonically well-behaved at extrapolated scales. Results at the extremes of the model size sweep (e.g., 960B dense models) should be interpreted with particular caution.

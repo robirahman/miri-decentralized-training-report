@@ -247,15 +247,15 @@ def activation_compression_quality(pp_compression, pp_stages, scenario=None):
 
 def replica_penalty(n_replicas, params_billion):
     """Multiplicative penalty from averaging n_replicas' pseudo-gradients.
-    Based on DiLoCo Scaling Laws (2503.09799) Table 5:
-    M=8 at 2.4B: ~1.2% penalty. Penalty decreases with model size."""
+    Based on DiLoCo Scaling Laws (2503.09799) Table 4:
+    M=8 at 2.4B: ~1.1% loss penalty. Penalty decreases with model size."""
     if n_replicas <= 1:
         return 1.0
     # ~0.5% per doubling at 2.4B, scales inversely with model size
     base_per_doubling = 0.005
     scale_adj = min(2.4, params_billion) / max(params_billion, 0.1)
     penalty = base_per_doubling * scale_adj * math.log2(n_replicas)
-    return max(0.85, 1.0 - penalty)
+    return max(0.0, 1.0 - penalty)
 
 
 # ── Chinchilla scaling law (corrected) ────────────────────────────────────────
