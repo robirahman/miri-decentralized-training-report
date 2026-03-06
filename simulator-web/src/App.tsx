@@ -30,13 +30,15 @@ function compressionQuality(compressionRatio: number): number {
   return interpolateQuality(COMPRESSION_QUALITY, compressionRatio)
 }
 
-/** Replica penalty: penalty from averaging multiple replicas' pseudo-gradients. */
-function replicaPenalty(nReplicas: number, paramsBillion: number): number {
+/** Loss multiplier from averaging multiple replicas' pseudo-gradients.
+ *  Power law fit to Charles et al. (2025) Table 4 (35M-2.4B, H=30):
+ *  L(N,M)/L(N,1) = M^β(N) where β(N) = 1.0923·N^(-0.2342).
+ *  Converted to FLOP penalty via Chinchilla scaling in chinchillaEfficiency(). */
+function replicaLossMultiplier(nReplicas: number, paramsBillion: number): number {
   if (nReplicas <= 1) return 1.0
-  const basePerDoubling = 0.005
-  const scaleAdj = Math.min(2.4, paramsBillion) / Math.max(paramsBillion, 0.1)
-  const penalty = basePerDoubling * scaleAdj * Math.log2(nReplicas)
-  return Math.max(0.0, 1.0 - penalty)
+  const params = paramsBillion * 1e9
+  const beta = 1.0923 * Math.pow(params, -0.2342)
+  return Math.pow(nReplicas, beta)
 }
 
 /** Activation compression quality: errors compound at each PP stage boundary. */
@@ -63,9 +65,11 @@ function chinchillaOptimalAllocation(cFlop: number): [number, number] {
   return [nOpt, dOpt]
 }
 
-/** Fraction of compute that is 'effective' vs Chinchilla-optimal allocation. */
-function chinchillaEfficiency(params: number, tokens: number, cFlop: number): number {
-  const lActual = chinchillaLoss(params, tokens)
+/** Fraction of compute that is 'effective' vs Chinchilla-optimal allocation.
+ *  lossMultiplier > 1.0 models quality degradation (e.g., from replica averaging). */
+function chinchillaEfficiency(params: number, tokens: number, cFlop: number,
+                               lossMultiplier: number = 1.0): number {
+  const lActual = chinchillaLoss(params, tokens) * lossMultiplier
   let lo = 1e10, hi = cFlop * 10
   for (let i = 0; i < 200; i++) {
     const mid = Math.sqrt(lo * hi)
@@ -327,11 +331,11 @@ function App() {
       }
     }
 
-    // Replica penalty: in PP-Group DiLoCo, replicas are groups, not individual nodes
+    // Replica loss multiplier: in PP-Group DiLoCo, replicas are groups, not individual nodes
     const numPPGroupsForReplica = isSharded ? Math.floor(effectiveNodes / ppStages) : 0
     const replicaCount = (isSharded && numPPGroupsForReplica >= 2) ? numPPGroupsForReplica : effectiveNodes
-    const etaReplicas = replicaPenalty(replicaCount, parameters / 1e9)
-    const algorithmicEfficiency = etaH * etaCompression * etaReplicas
+    const replicaLossMult = replicaLossMultiplier(replicaCount, parameters / 1e9)
+    const algorithmicEfficiency = etaH * etaCompression
 
     // Activation compression quality penalty (only for PP mode)
     const etaActivation = isSharded ? activationCompressionQualityFn(ppCompression, ppStages) : 1.0
@@ -350,8 +354,8 @@ function App() {
     const globalMfu = (theoreticalFlops / hardwareMaxFlops)
     const globalHfu = globalMfu / 0.8 // MFU is ~80% of HFU per research
 
-    // Chinchilla quality: penalizes over/under-training relative to optimal allocation
-    const etaChinchilla = chinchillaEfficiency(parameters, tokens, theoreticalFlops)
+    // Chinchilla quality: penalizes over/under-training + replica loss degradation
+    const etaChinchilla = chinchillaEfficiency(parameters, tokens, theoreticalFlops, replicaLossMult)
     const cQuality = theoreticalFlops * totalEfficiency * etaChinchilla
 
     // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
@@ -384,7 +388,7 @@ function App() {
       efficiency: (totalEfficiency * 100).toFixed(1),
       etaH: (etaH * 100).toFixed(1),
       etaCompression: (etaCompression * 100).toFixed(1),
-      etaReplicas: (etaReplicas * 100).toFixed(1),
+      etaReplicas: ((replicaLossMult - 1) * 100).toFixed(2),
       etaActivation: (etaActivation * 100).toFixed(1),
       etaChinchilla: (etaChinchilla * 100).toFixed(1),
       globalMfu: (globalMfu * 100).toFixed(1),
@@ -828,8 +832,8 @@ function App() {
                 <h1 style={{ color: results.days < 365 ? '#10b981' : '#f43f5e', margin: 0 }}>{results.days} Days</h1>
                 <p style={{ fontWeight: 600, marginTop: '8px' }}>{results.feasibility}</p>
                 <div style={{ fontSize: '0.85em', color: '#64748b', marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span>{results.efficiency}% total efficiency ({results.etaH}% sync × {results.etaCompression}% compress{results.etaReplicas !== '100.0' ? ` × ${results.etaReplicas}% replica` : ''}{results.etaActivation !== '100.0' ? ` × ${results.etaActivation}% act.compress` : ''})</span>
-                  <span>Chinchilla efficiency: {results.etaChinchilla}%</span>
+                  <span>{results.efficiency}% total efficiency ({results.etaH}% sync × {results.etaCompression}% compress{results.etaActivation !== '100.0' ? ` × ${results.etaActivation}% act.compress` : ''})</span>
+                  <span>Chinchilla efficiency: {results.etaChinchilla}%{results.etaReplicas !== '0.00' ? ` (incl. +${results.etaReplicas}% replica loss)` : ''}</span>
                   <span>Global MFU: <span style={{ color: results.globalMfu < 20 ? '#f43f5e' : '#94a3b8' }}>{results.globalMfu}%</span> | HFU: {results.globalHfu}%</span>
                 </div>
                 {results.globalMfu < 20 && (

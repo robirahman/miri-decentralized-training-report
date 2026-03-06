@@ -279,7 +279,7 @@ Decentralized training with infrequent synchronization is not 100% compute-equiv
 
 ### 4.1 Efficiency Equation
 
-$$\eta = \eta_H \times \eta_{\text{compression}} \times \eta_{\text{replicas}}$$
+$$\eta = \eta_H \times \eta_{\text{compression}}$$
 
 where:
 
@@ -287,13 +287,14 @@ $$\eta_H = \max\!\left(0.4,\;\frac{1 - \alpha \cdot \log_{10}(H_{\text{eff}})}{P
 
 *   $\eta_H$ = sync interval penalty (quality loss from infrequent synchronization).
 *   $\eta_{\text{compression}}$ = compression quality factor (quality loss from pseudo-gradient compression). See §4.6.
-*   $\eta_{\text{replicas}}$ = replica count penalty (quality loss from averaging many replicas). See §4.7.
 *   $H_{\text{eff}}$ = effective inner steps between global syncs.
 *   $\alpha$ = sensitivity coefficient (base value ~0.08, reduced for larger models).
 *   $P_{\text{strategy}}$ = straggler strategy penalty (1.15 for threshold aggregation, 1.0 otherwise).
 *   Floor of 40% prevents nonsensical near-zero efficiency (applied to $\eta_H$ before multiplication).
 
-**Interpretation:** Efficiency $\eta < 1$ means the model requires $1/\eta$ times more tokens (and wall-clock time) to reach the same loss as fully-synchronous training. The three components are independent and multiplicative: a 2% compression penalty combined with a 12% sync penalty yields $0.98 \times 0.88 = 0.862$ total efficiency, not $1 - 0.02 - 0.12 = 0.86$.
+**Interpretation:** Efficiency $\eta < 1$ means the model requires $1/\eta$ times more tokens (and wall-clock time) to reach the same loss as fully-synchronous training. The two components are independent and multiplicative: a 2% compression penalty combined with a 12% sync penalty yields $0.98 \times 0.88 = 0.862$ total efficiency, not $1 - 0.02 - 0.12 = 0.86$.
+
+**Note:** The replica count penalty (§4.7) is not part of the throughput efficiency $\eta$. It is a *loss quality* effect — replicas degrade the achieved loss, not compute throughput. The replica loss penalty is incorporated into the Chinchilla efficiency calculation (§4.9) via a loss multiplier, which properly converts the loss degradation to an effective FLOP penalty through the nonlinear Chinchilla scaling law.
 
 ### 4.2 Logarithmic Decay with $H$
 
@@ -371,33 +372,32 @@ For compression ratios between these thresholds, the simulator interpolates log-
 
 **Limitation:** The compression quality factors are engineering estimates, not published empirical measurements at 100B+ scale. The expected values should be treated as the simulator's best guess, not as established findings. See `Governance_Analysis.md`, Section 11 for the full literature review.
 
-### 4.7 Replica Count Penalty
+### 4.7 Replica Count Loss Penalty
 
-$$\eta_{\text{replicas}} = \max\!\left(0,\; 1 - 0.005 \cdot \frac{\min(2.4, P_B)}{P_B} \cdot \log_2(N)\right)$$
+$$L_{\text{replicas}}(N, M) = M^{\beta(N)} \quad\text{where}\quad \beta(N) = 1.0923 \cdot N^{-0.2342}$$
 
-where $P_B$ is the model size in billions of parameters and $N$ is the number of replicas (nodes in flat DiLoCo, groups in PP-Group DiLoCo, or nodes in hierarchical DiLoCo).
+where $N$ is the number of model parameters, $M$ is the number of replicas (nodes in flat DiLoCo, groups in PP-Group DiLoCo, or nodes in hierarchical DiLoCo), and $L_{\text{replicas}}$ is a **loss multiplier** (e.g. 1.015 means 1.5% loss increase).
 
-**Parameterization:**
+**Derivation:** Power law fit to Charles et al. (2025) Table 4, which provides evaluation losses for 7 model sizes (35M–2.4B) at $M \in \{1, 2, 4, 8\}$ with $H=30$ and Chinchilla-optimal token budgets. The implied exponent $\beta$ was computed at each model size as $\beta = \ln(L_{M=8}/L_{M=1}) / \ln(8)$, then fit as $\beta(N) = c \cdot N^{-\gamma}$ via log-log regression. The fit achieves $<0.05\%$ residual error across all 7 data points. Predictions were validated against Charles et al.'s 4B and 10B results (Table 5).
 
-*   Base penalty: ~0.5% per doubling of replicas at 2.4B parameters.
-*   Scale adjustment: penalty decreases inversely with model size (larger models are more robust to multi-replica averaging).
+**FLOP conversion:** The loss multiplier is converted to an effective FLOP penalty through the Chinchilla scaling law (§4.9). The simulator computes $L_{\text{actual}} \times L_{\text{replicas}}$ and finds the compute $C'$ such that $L_{\text{opt}}(C') = L_{\text{actual}} \times L_{\text{replicas}}$. The ratio $C'/C$ gives the Chinchilla efficiency inclusive of the replica penalty. This is important because the Chinchilla scaling law is highly nonlinear: a 1% loss increase can correspond to a 10–30% effective compute penalty depending on the operating point.
 
-**Example values:**
+**Example loss penalties (percentage increase):**
 
-| Replicas ($N$) | 2.4B model | 10B model | 100B model | 240B model |
+| Replicas ($M$) | 2.4B model | 10B model | 100B model | 250B model |
 |:--|:--|:--|:--|:--|
-| 2 | 0.995 | 0.999 | 1.000 | 1.000 |
-| 8 | 0.985 | 0.996 | 1.000 | 1.000 |
-| 72 | 0.969 | 0.993 | 0.999 | 1.000 |
-| 500 | 0.955 | 0.989 | 0.999 | 1.000 |
-| 2,000 | 0.945 | 0.987 | 0.999 | 1.000 |
-| 4,000 | 0.940 | 0.986 | 0.999 | 1.000 |
+| 8 | 1.45% | 1.04% | 0.60% | 0.48% |
+| 72 | 3.01% | 2.15% | 1.25% | 1.00% |
+| 500 | 4.41% | 3.13% | 1.82% | 1.46% |
+| 2,000 | 5.45% | 3.87% | 2.24% | 1.81% |
+| 10,000 | 6.53% | 4.64% | 2.66% | 2.14% |
 
 **Evidence:**
-*   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 4 shows that at 2.4B parameters with H=30, $M=8$ replicas incur ~1.1% loss penalty vs data-parallel (1.5% vs $M=1$). The penalty decreases with model size. Note: this is a *loss* penalty, not a direct FLOP penalty; converting through the Chinchilla scaling law gives a ~1.45× FLOP multiplier for this loss gap.
-*   [Epoch AI (2024)](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale): interprets the Charles et al. data as "increasing from 1 to 8 nodes is equivalent to a 1.5× decrease in training compute," and projects that $M=10{,}000$ replicas would require ~6× FLOP multiplier, suggesting steep degradation at very high counts.
+*   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 4 shows that at 2.4B parameters with $H=30$, $M=8$ replicas incur ~1.5% loss penalty vs $M=1$ (DiLoCo). Table 10 provides a joint scaling law $L(N,M) = 19.226 \cdot N^{-0.0985} \cdot M^{0.0116}$ with a single global $\beta=0.0116$, but fitting $\beta(N)$ separately at each model size reveals the exponent decreases monotonically from 0.019 at 35M to 0.007 at 2.4B. The paper explicitly states: "the percentage difference strictly decreases with $N$."
+*   [DiLoCoX (Chen et al., 2025)](https://arxiv.org/abs/2506.21263): 107B model, 20 replicas over 1 Gbps — observed +7.7% loss gap vs AllReduce, but this conflates replica penalty with 1000× compression and only 4,000 training steps.
+*   [Epoch AI (2024)](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale): interprets the Charles et al. data as a 1.5× FLOP multiplier at $M=8$, and projects ~6× at $M=10{,}000$. This uses a naive constant-ratio-per-doubling extrapolation.
 
-**Limitation:** The formula is calibrated to $M \leq 8$ at 2.4B scale. Extrapolation to $M=2{,}000+$ is weakly supported. The formula treats the replica penalty as a linear FLOP multiplier (η=0.985 for M=8 at 2.4B), but the actual penalty when converted through scaling laws is much larger (~1.45× FLOP multiplier). At the 100B+ model sizes used in the governance analysis, the replica penalty is negligible (<0.1%) regardless of the conversion method, so this discrepancy does not affect the governance conclusions.
+**Limitation:** The power law $\beta(N) = 1.09 \cdot N^{-0.234}$ is fit to $N \leq 2.4\text{B}$ and validated to 10B. Extrapolation to 100B+ assumes the power law decay continues, which is plausible but unconfirmed. The decay exponent $\gamma = 0.234$ means the penalty decreases slowly — at 250B the penalty is still ~1% for 72 replicas, which is **not negligible** when converted through Chinchilla scaling. The extrapolation beyond $M=8$ is also weakly supported; the power law form $M^{\beta}$ is assumed to hold at high replica counts.
 
 ### 4.8 Activation Compression Quality
 

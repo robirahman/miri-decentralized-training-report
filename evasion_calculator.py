@@ -80,6 +80,16 @@ CONFIGS_FP8 = {
         "bytes_per_param": 14,           # FP8: 1+1+4+4+4 = 14 bytes
         "bits_per_pseudo_grad": 8,       # FP8 pseudo-gradients (8 bits)
     },
+    "16x GH200 FP8": {
+        "pflops": 16 * 1980e12 / 1e15,  # 16 x 1980 TFLOPS FP8 = 31.68 PFLOPS
+        "pflops_fp16": 15.84,             # For CCC threshold calculation
+        "vram_gb": 16 * 144,             # 2,304 GB (144 GB per GH200)
+        "gpu_count": 16,
+        "gpu_cost_usd": 30_000,          # ~$30k per GH200 (2025 est.)
+        "h100_equiv": 16.0,              # CCC threshold uses FP16 capacity
+        "bytes_per_param": 14,           # FP8: 1+1+4+4+4 = 14 bytes
+        "bits_per_pseudo_grad": 8,       # FP8 pseudo-gradients (8 bits)
+    },
 }
 
 
@@ -245,17 +255,17 @@ def activation_compression_quality(pp_compression, pp_stages, scenario=None):
     return per_boundary ** n_boundaries
 
 
-def replica_penalty(n_replicas, params_billion):
-    """Multiplicative penalty from averaging n_replicas' pseudo-gradients.
-    Based on DiLoCo Scaling Laws (2503.09799) Table 4:
-    M=8 at 2.4B: ~1.1% loss penalty. Penalty decreases with model size."""
+def replica_loss_multiplier(n_replicas, params_billion):
+    """Loss multiplier from averaging n_replicas' pseudo-gradients.
+    Uses power law fit to Charles et al. (2025) Table 4 (35M-2.4B, H=30):
+      L(N,M)/L(N,1) = M^beta(N)  where  beta(N) = 1.0923 * N^(-0.2342)
+    Validated on 4B and 10B. Extrapolated beyond 10B.
+    Converted to FLOP penalty via Chinchilla scaling in chinchilla_efficiency()."""
     if n_replicas <= 1:
         return 1.0
-    # ~0.5% per doubling at 2.4B, scales inversely with model size
-    base_per_doubling = 0.005
-    scale_adj = min(2.4, params_billion) / max(params_billion, 0.1)
-    penalty = base_per_doubling * scale_adj * math.log2(n_replicas)
-    return max(0.0, 1.0 - penalty)
+    params = params_billion * 1e9
+    beta = 1.0923 * params ** (-0.2342)
+    return n_replicas ** beta
 
 
 # ── Chinchilla scaling law (corrected) ────────────────────────────────────────
@@ -281,24 +291,32 @@ def chinchilla_loss(params, tokens):
     return _CHIN_E + _CHIN_A * params**(-_CHIN_ALPHA) + _CHIN_B * tokens**(-_CHIN_BETA)
 
 
-def chinchilla_optimal_allocation(c_flop):
+def chinchilla_optimal_allocation(c_flop, overtrain_target=1.0):
     """Given total compute C = 6*N*D, find (N_opt, D_opt) minimizing loss.
-    With D* = 25.6*N: C = 6*N*25.6*N = 153.6*N^2."""
-    n_opt = math.sqrt(c_flop / (6 * CHINCHILLA_TOKENS_PER_PARAM))
-    d_opt = CHINCHILLA_TOKENS_PER_PARAM * n_opt
+    With D* = overtrain_target * 25.6 * N:
+      C = 6 * N * (overtrain_target * 25.6 * N) = 153.6 * overtrain_target * N^2.
+    At overtrain_target=1.0 (default), this is Chinchilla-optimal.
+    At overtrain_target=3.0, models are 3x overtrained (industry-standard)."""
+    tokens_per_param = CHINCHILLA_TOKENS_PER_PARAM * overtrain_target
+    n_opt = math.sqrt(c_flop / (6 * tokens_per_param))
+    d_opt = tokens_per_param * n_opt
     return n_opt, d_opt
 
 
-def chinchilla_efficiency(params, tokens, c_flop):
-    """Fraction of compute that is 'effective' vs Chinchilla-optimal allocation.
-    Returns eta_chinchilla in [0, 1]. At optimal allocation returns ~1.0.
-    Method: binary search for C' such that L_opt(C') = L(params, tokens)."""
-    l_actual = chinchilla_loss(params, tokens)
-    # Find C_effective: compute needed at Chinchilla-optimal to reach same loss
+def chinchilla_efficiency(params, tokens, c_flop, loss_multiplier=1.0,
+                          overtrain_target=1.0):
+    """Fraction of compute that is 'effective' vs reference-optimal allocation.
+    Returns eta_chinchilla in [0, 1]. At reference-optimal returns ~1.0.
+    overtrain_target: the overtraining ratio considered "optimal" (default 1.0).
+      At 3.0, a 3x-overtrained model scores eta=1.0.
+    loss_multiplier > 1.0 models quality degradation (e.g., from replica averaging).
+    Method: binary search for C' such that L_ref(C') = L(params, tokens) * loss_multiplier."""
+    l_actual = chinchilla_loss(params, tokens) * loss_multiplier
+    # Find C_effective: compute needed at reference-optimal to reach same loss
     lo, hi = 1e10, c_flop * 10  # search up to 10x current compute
     for _ in range(200):
         mid = math.sqrt(lo * hi)  # geometric bisection
-        n_mid, d_mid = chinchilla_optimal_allocation(mid)
+        n_mid, d_mid = chinchilla_optimal_allocation(mid, overtrain_target)
         l_mid = chinchilla_loss(n_mid, d_mid)
         if l_mid > l_actual:
             lo = mid
@@ -308,17 +326,16 @@ def chinchilla_efficiency(params, tokens, c_flop):
     return min(1.0, c_effective / c_flop)
 
 
-def efficiency(h, params_billion, compression_ratio=1, scenario=None, n_replicas=1):
-    """Combined efficiency: eta_H * eta_compression * eta_replicas.
+def efficiency(h, params_billion, compression_ratio=1, scenario=None):
+    """Combined throughput efficiency: eta_H * eta_compression.
     eta_H = max(0.4, 1 - alpha * log10(H))  [sync interval penalty]
     eta_compression = compression_quality()   [gradient compression quality]
-    eta_replicas = replica_penalty()           [multi-replica averaging]"""
+    Replica penalty is a quality effect, handled via chinchilla_efficiency()."""
     a = alpha(params_billion)
     eta_h = 1.0 - a * math.log10(h)
     eta_h = max(0.4, eta_h)
     eta_c = compression_quality(compression_ratio, scenario)
-    eta_r = replica_penalty(n_replicas, params_billion)
-    return eta_h * eta_c * eta_r
+    return eta_h * eta_c
 
 
 def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
@@ -381,7 +398,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     else:
         h_min = math.ceil(t_sync / t_comp)
         eta = efficiency(h_min, params_b, compression_ratio=compression,
-                         scenario=scenario, n_replicas=n_nodes)
+                         scenario=scenario)
 
     # Total local-equivalent FLOPs (compute-bound regime)
     c_actual = n_nodes * effective_flops * time_seconds
@@ -392,8 +409,10 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    # Chinchilla-optimality efficiency
-    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    # Chinchilla-optimality + replica quality penalty
+    loss_mult = replica_loss_multiplier(n_nodes, params_b) if n_nodes > 1 else 1.0
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
+                                     loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     c_quality = c_local * eta_chin
 
     # Cost
@@ -515,7 +534,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     h_eff = h_inner_min * math.sqrt(h_regional_min)
 
     eta = efficiency(h_eff, params_b, compression_ratio=compression,
-                     scenario=scenario, n_replicas=n_nodes)
+                     scenario=scenario)
 
     # Total local-equivalent FLOPs
     c_actual = n_nodes * effective_flops * time_seconds
@@ -526,8 +545,10 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    # Chinchilla-optimality efficiency
-    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual)
+    # Chinchilla-optimality + replica quality penalty
+    loss_mult = replica_loss_multiplier(n_nodes, params_b)
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
+                                     loss_multiplier=loss_mult)
     c_quality = c_local * eta_chin
 
     # Cost
@@ -619,7 +640,7 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     else:
         h_min = math.ceil(t_sync / t_step)
         eta = efficiency(h_min, total_params_b, compression_ratio=compression,
-                         scenario=scenario, n_replicas=n_nodes)
+                         scenario=scenario)
 
     # Total local-equivalent FLOPs (based on active params compute rate)
     # Adjust for EP latency overhead
@@ -632,8 +653,10 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     chinchilla_tokens_active = CHINCHILLA_TOKENS_PER_PARAM * params_active
     overtraining_ratio = total_tokens / chinchilla_tokens_active
 
-    # Chinchilla-optimality (based on active params, since that determines quality)
-    eta_chin = chinchilla_efficiency(params_active, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    # Chinchilla-optimality + replica quality penalty
+    loss_mult = replica_loss_multiplier(n_nodes, total_params_b) if n_nodes > 1 else 1.0
+    eta_chin = chinchilla_efficiency(params_active, total_tokens, c_actual,
+                                     loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     c_quality = c_local * eta_chin
 
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
@@ -768,9 +791,9 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     # Minimum H (inner steps before DiLoCo sync)
     h_min = max(1, math.ceil(t_sync / pp_step_time))
 
-    # Efficiency components
+    # Efficiency components (throughput only; replica penalty via Chinchilla)
     eta_h_c_r = efficiency(h_min, target_params_b, compression_ratio=compression,
-                           scenario=scenario, n_replicas=n_groups)
+                           scenario=scenario)
     eta_act = activation_compression_quality(pp_compression, pp_stages, scenario)
     eta = eta_h_c_r * eta_act
 
@@ -786,8 +809,10 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     c_actual = 6 * params * total_tokens
     c_local = c_actual * eta
 
-    # Chinchilla-optimality
-    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_groups > 1 else 1.0
+    # Chinchilla-optimality + replica quality penalty
+    loss_mult = replica_loss_multiplier(n_groups, target_params_b) if n_groups > 1 else 1.0
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
+                                     loss_multiplier=loss_mult) if n_groups > 1 else 1.0
     c_quality = c_local * eta_chin
 
     # Overtraining
@@ -1290,7 +1315,7 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     else:
         h_min = math.ceil(t_sync / t_comp)
         eta = efficiency(h_min, params_b, compression_ratio=compression,
-                         scenario=scenario, n_replicas=n_nodes)
+                         scenario=scenario)
 
     c_actual = n_nodes * effective_flops * time_seconds
     c_local = c_actual * eta
@@ -1300,8 +1325,10 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    # Chinchilla-optimality efficiency
-    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual) if n_nodes > 1 else 1.0
+    # Chinchilla-optimality + replica quality penalty
+    loss_mult = replica_loss_multiplier(n_nodes, params_b) if n_nodes > 1 else 1.0
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
+                                     loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     c_quality = c_local * eta_chin
 
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
