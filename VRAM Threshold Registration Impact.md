@@ -1,6 +1,6 @@
 # Registration Impact of a 1,280 GB VRAM Threshold
 
-## Robi Rahman, MIRI Technical Governance Team | 2026-03-20
+## Document by Claude | 2026-03-20
 
 ## Background
 
