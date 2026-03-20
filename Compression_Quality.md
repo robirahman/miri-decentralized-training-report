@@ -10,9 +10,9 @@ The efficiency model in the [Governance Analysis](Governance_Analysis.md) (Secti
 
 The simulator's compression quality model applies multiplicative factors to efficiency:
 
-$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}} \times \eta_{\text{act-compression}}$$
+$$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{act-compression}} \times \eta_{\text{replica}}$$
 
-where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). The sync interval penalty ($\eta_H$) is the dominant term and is well-calibrated against empirical data (DiLoCo Scaling Laws, 2503.09799). The pseudo-gradient compression quality ($\eta_{\text{pg-compression}}$), replica penalty ($\eta_{\text{replicas}}$), and activation compression quality ($\eta_{\text{act-compression}}$) are estimated from the literature with varying levels of confidence.
+where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). The sync interval penalty ($\eta_H$) is well-calibrated against empirical data (DiLoCo Scaling Laws, 2503.09799). The replica divergence penalty ($\eta_{\text{replica}}$) is the dominant factor at high replica counts — it is converted from a loss multiplier to a FLOP penalty via the Chinchilla scaling law, which amplifies small loss increases into substantial FLOP penalties (see Simulator Documentation §4.7). The pseudo-gradient compression quality ($\eta_{\text{pg-compression}}$) and activation compression quality ($\eta_{\text{act-compression}}$) are estimated from the literature with varying levels of confidence.
 
 **What the simulator does NOT model:**
 - Error feedback (the mechanism for accumulating compression residuals) — whether it is used or needed
