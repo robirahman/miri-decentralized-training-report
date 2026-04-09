@@ -16,22 +16,66 @@ CONFIGS = {
         "pflops": 50 * 312e12 / 1e15,   # 50 x 312 TFLOPS = 15.600 PFLOPS
         "vram_gb": 50 * 80,              # 4,000 GB
         "gpu_count": 50,
-        "gpu_cost_usd": 15_000,          # ~$15k per A100 80GB (2025)
+        "gpu_cost_usd": 7_000,           # ~$7k per A100 80GB (early 2026, secondary market)
         "h100_equiv": 50 * 312 / 990,    # ~15.8
     },
     "16x GH200": {
         "pflops": 15.84,                 # 16 x 990 TFLOPS
         "vram_gb": 16 * 144,             # 2,304 GB
         "gpu_count": 16,
-        "gpu_cost_usd": 30_000,          # ~$30k per GH200 (2025 est.)
+        "gpu_cost_usd": 28_000,          # ~$28k per GH200 (early 2026 est.)
         "h100_equiv": 16.0,
     },
     "16x H100 SXM": {
         "pflops": 15.84,                 # 16 x 990 TFLOPS
         "vram_gb": 16 * 80,              # 1,280 GB
         "gpu_count": 16,
-        "gpu_cost_usd": 30_000,          # ~$30k per H100 (2025)
+        "gpu_cost_usd": 25_000,          # ~$25k per H100 (early 2026)
         "h100_equiv": 16.0,
+    },
+    # Chinese chips (only available domestically in China; not export-available)
+    "49x Ascend 910B": {
+        "pflops": 49 * 320e12 / 1e15,   # 49 x 320 TFLOPS = 15.68 PFLOPS
+        "vram_gb": 49 * 64,             # 3,136 GB HBM2e
+        "gpu_count": 49,
+        "gpu_cost_usd": 16_000,         # ¥110,000 (~$16k)
+        "h100_equiv": 49 * 320 / 990,   # ~15.8
+    },
+    "26x Ascend 910C": {
+        "pflops": 26 * 600e12 / 1e15,   # 26 x 600 TFLOPS = 15.60 PFLOPS (est.)
+        "vram_gb": 26 * 128,            # 3,328 GB HBM (est.)
+        "gpu_count": 26,
+        "gpu_cost_usd": 26_000,         # ¥180,000 (~$26k)
+        "h100_equiv": 26 * 600 / 990,   # ~15.8
+    },
+    # Google TPUs (BF16 TFLOPS treated as FP16-equivalent)
+    "57x TPU v4": {
+        "pflops": 57 * 275e12 / 1e15,   # 57 x 275 TFLOPS = 15.675 PFLOPS
+        "vram_gb": 57 * 32,             # 1,824 GB HBM2e
+        "gpu_count": 57,
+        "gpu_cost_usd": 12_000,         # est. capital equiv. from cloud rental rates
+        "h100_equiv": 57 * 275 / 990,   # ~15.8
+    },
+    "80x TPU v5e": {
+        "pflops": 80 * 197e12 / 1e15,   # 80 x 197 TFLOPS = 15.76 PFLOPS
+        "vram_gb": 80 * 16,             # 1,280 GB HBM
+        "gpu_count": 80,
+        "gpu_cost_usd": 6_000,          # est. capital equiv. from cloud rental rates
+        "h100_equiv": 80 * 197 / 990,   # ~15.9
+    },
+    "34x TPU v5p": {
+        "pflops": 34 * 459e12 / 1e15,   # 34 x 459 TFLOPS = 15.606 PFLOPS
+        "vram_gb": 34 * 95,             # 3,230 GB HBM2e
+        "gpu_count": 34,
+        "gpu_cost_usd": 20_000,         # est. capital equiv. from cloud rental rates
+        "h100_equiv": 34 * 459 / 990,   # ~15.8
+    },
+    "17x TPU v6e": {
+        "pflops": 17 * 918e12 / 1e15,   # 17 x 918 TFLOPS = 15.606 PFLOPS
+        "vram_gb": 17 * 32,             # 544 GB HBM
+        "gpu_count": 17,
+        "gpu_cost_usd": 25_000,         # est. capital equiv. from cloud rental rates
+        "h100_equiv": 17 * 918 / 990,   # ~15.8
     },
 }
 
@@ -55,6 +99,9 @@ TIME_SECONDS = TIME_YEARS * 365.25 * 86400  # 47,335,400 seconds
 NODE_COUNTS = [1, 2, 4, 8, 16, 32, 72, 144, 500, 1000]
 NODE_COUNTS_LARGE = [500, 1000, 2000, 3000, 4000, 5000]
 
+# Replica penalty H-dependence
+REPLICA_H_REF = 30   # Charles et al. (2025) experimental inner step count
+
 # Hierarchical DiLoCo regional parameters
 REGIONAL_BW_MBPS = 1000    # 1 Gbps regional interconnect
 REGIONAL_BW_BPS = REGIONAL_BW_MBPS * 1e6
@@ -75,7 +122,7 @@ CONFIGS_FP8 = {
         "pflops_fp16": 15.84,             # For CCC threshold calculation
         "vram_gb": 16 * 80,              # 1,280 GB
         "gpu_count": 16,
-        "gpu_cost_usd": 30_000,
+        "gpu_cost_usd": 25_000,
         "h100_equiv": 16.0,              # CCC threshold uses FP16 capacity
         "bytes_per_param": 14,           # FP8: 1+1+4+4+4 = 14 bytes
         "bits_per_pseudo_grad": 8,       # FP8 pseudo-gradients (8 bits)
@@ -85,10 +132,42 @@ CONFIGS_FP8 = {
         "pflops_fp16": 15.84,             # For CCC threshold calculation
         "vram_gb": 16 * 144,             # 2,304 GB (144 GB per GH200)
         "gpu_count": 16,
-        "gpu_cost_usd": 30_000,          # ~$30k per GH200 (2025 est.)
+        "gpu_cost_usd": 28_000,          # ~$28k per GH200 (early 2026 est.)
         "h100_equiv": 16.0,              # CCC threshold uses FP16 capacity
         "bytes_per_param": 14,           # FP8: 1+1+4+4+4 = 14 bytes
         "bits_per_pseudo_grad": 8,       # FP8 pseudo-gradients (8 bits)
+    },
+    # Chinese chips with FP8 support (only available domestically in China)
+    "49x Ascend 910B FP8": {
+        "pflops": 49 * 640e12 / 1e15,   # 49 x 640 TFLOPS FP8 = 31.36 PFLOPS
+        "pflops_fp16": 49 * 320e12 / 1e15,
+        "vram_gb": 49 * 64,             # 3,136 GB HBM2e
+        "gpu_count": 49,
+        "gpu_cost_usd": 16_000,         # ¥110,000 (~$16k)
+        "h100_equiv": 49 * 320 / 990,
+        "bytes_per_param": 14,
+        "bits_per_pseudo_grad": 8,
+    },
+    "26x Ascend 910C FP8": {
+        "pflops": 26 * 1200e12 / 1e15,  # 26 x 1200 TFLOPS FP8 = 31.20 PFLOPS (est.)
+        "vram_gb": 26 * 128,            # 3,328 GB HBM (est.)
+        "pflops_fp16": 26 * 600e12 / 1e15,
+        "gpu_count": 26,
+        "gpu_cost_usd": 26_000,         # ¥180,000 (~$26k)
+        "h100_equiv": 26 * 600 / 990,
+        "bytes_per_param": 14,
+        "bits_per_pseudo_grad": 8,
+    },
+    # Google TPU v6e with FP8 support
+    "17x TPU v6e FP8": {
+        "pflops": 17 * 1836e12 / 1e15,  # 17 x 1836 TFLOPS FP8 = 31.21 PFLOPS
+        "pflops_fp16": 17 * 918e12 / 1e15,
+        "vram_gb": 17 * 32,             # 544 GB HBM
+        "gpu_count": 17,
+        "gpu_cost_usd": 25_000,         # est. capital equiv. from cloud rental rates
+        "h100_equiv": 17 * 918 / 990,
+        "bytes_per_param": 14,
+        "bits_per_pseudo_grad": 8,
     },
 }
 
@@ -96,48 +175,48 @@ CONFIGS_FP8 = {
 # ── Countermeasure analysis configs ───────────────────────────────────────────
 
 # Lowered CCC threshold: max A100-80GB node under each threshold
-# A100 80GB: 312 TFLOPS FP16 each, $15k each, 80 GB VRAM each
+# A100 80GB: 312 TFLOPS FP16 each, $7k each (early 2026), 80 GB HBM each
 # Max GPUs = floor(threshold_h100_equiv * 990 / 312)
 LOWERED_CCC_A100 = {
     "16 H100-eq (current)": {"gpu_count": 50, "pflops": 50 * 312e12 / 1e15,
-                              "vram_gb": 50 * 80, "gpu_cost_usd": 15_000,
+                              "vram_gb": 50 * 80, "gpu_cost_usd": 7_000,
                               "h100_equiv": 50 * 312 / 990},
     "8 H100-eq":  {"gpu_count": 25, "pflops": 25 * 312e12 / 1e15,
-                    "vram_gb": 25 * 80, "gpu_cost_usd": 15_000,
+                    "vram_gb": 25 * 80, "gpu_cost_usd": 7_000,
                     "h100_equiv": 25 * 312 / 990},
     "4 H100-eq":  {"gpu_count": 12, "pflops": 12 * 312e12 / 1e15,
-                    "vram_gb": 12 * 80, "gpu_cost_usd": 15_000,
+                    "vram_gb": 12 * 80, "gpu_cost_usd": 7_000,
                     "h100_equiv": 12 * 312 / 990},
     "2 H100-eq":  {"gpu_count": 6,  "pflops": 6 * 312e12 / 1e15,
-                    "vram_gb": 6 * 80,  "gpu_cost_usd": 15_000,
+                    "vram_gb": 6 * 80,  "gpu_cost_usd": 7_000,
                     "h100_equiv": 6 * 312 / 990},
     "1 H100-eq":  {"gpu_count": 3,  "pflops": 3 * 312e12 / 1e15,
-                    "vram_gb": 3 * 80,  "gpu_cost_usd": 15_000,
+                    "vram_gb": 3 * 80,  "gpu_cost_usd": 7_000,
                     "h100_equiv": 3 * 312 / 990},
 }
 
 # Lowered CCC threshold: max H100 SXM node under each threshold (FP8 compute)
-# H100 SXM: 990 TFLOPS FP16 each (1980 FP8), $30k each, 80 GB VRAM each
+# H100 SXM: 990 TFLOPS FP16 each (1980 FP8), $25k each (early 2026), 80 GB HBM each
 LOWERED_CCC_H100_FP8 = {
     "16 H100-eq (current)": {"gpu_count": 16, "pflops": 16 * 1980e12 / 1e15,
                               "pflops_fp16": 15.84, "vram_gb": 16 * 80,
-                              "gpu_cost_usd": 30_000, "h100_equiv": 16.0,
+                              "gpu_cost_usd": 25_000, "h100_equiv": 16.0,
                               "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
     "8 H100-eq":  {"gpu_count": 8,  "pflops": 8 * 1980e12 / 1e15,
                     "pflops_fp16": 7.92,  "vram_gb": 8 * 80,
-                    "gpu_cost_usd": 30_000, "h100_equiv": 8.0,
+                    "gpu_cost_usd": 25_000, "h100_equiv": 8.0,
                     "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
     "4 H100-eq":  {"gpu_count": 4,  "pflops": 4 * 1980e12 / 1e15,
                     "pflops_fp16": 3.96,  "vram_gb": 4 * 80,
-                    "gpu_cost_usd": 30_000, "h100_equiv": 4.0,
+                    "gpu_cost_usd": 25_000, "h100_equiv": 4.0,
                     "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
     "2 H100-eq":  {"gpu_count": 2,  "pflops": 2 * 1980e12 / 1e15,
                     "pflops_fp16": 1.98,  "vram_gb": 2 * 80,
-                    "gpu_cost_usd": 30_000, "h100_equiv": 2.0,
+                    "gpu_cost_usd": 25_000, "h100_equiv": 2.0,
                     "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
     "1 H100-eq":  {"gpu_count": 1,  "pflops": 1 * 1980e12 / 1e15,
                     "pflops_fp16": 0.99,  "vram_gb": 1 * 80,
-                    "gpu_cost_usd": 30_000, "h100_equiv": 1.0,
+                    "gpu_cost_usd": 25_000, "h100_equiv": 1.0,
                     "bytes_per_param": 14, "bits_per_pseudo_grad": 8},
 }
 
@@ -149,17 +228,21 @@ MEMORY_THRESHOLDS_GB = [256, 512, 1024, 2048]
 # Multiplicative penalty on eta from gradient compression quality loss.
 # Based on literature review:
 #   - FP4 (4x): lossless at 4B (Streaming DiLoCo 2501.18512), 15B (MuLoCo 2505.23725)
-#   - 16x: FP4 + 4x sparsification; FP4 validated, sparsification limited evidence
-#   - 100x: 2-bit + TopK 3% or FP4 + 25x sparse; validated only at 512M (SparseLoCo 2508.15706)
-# "optimistic" = best-case (literature supports lossless at small scale)
-# "expected"   = accounts for extrapolation uncertainty to 100B+ scale
-# "conservative" = genuinely pessimistic given 100-330x scale gaps from validation
+#   - 16x: FP4 + 4x sparsification; implicitly validated at 72B by Covenant
+#   - 100x: 2-bit + TopK 3%; validated at 512M (SparseLoCo 2508.15706),
+#           implicitly validated at 72B (Covenant uses 146x, arXiv:2603.08163)
+#   - 500x: speculative; not demonstrated, similar extrapolation risk as
+#           100x had pre-Covenant (from validated scale to ~3.4x beyond)
+# "optimistic" = best-case (literature supports lossless at validated scale)
+# "expected"   = central estimate accounting for remaining extrapolation to 100B+
+# "conservative" = genuinely pessimistic given remaining uncertainty
 
 COMPRESSION_QUALITY = {
     1:   {"optimistic": 1.00, "expected": 1.00, "conservative": 1.00},
-    4:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.97},
-    16:  {"optimistic": 1.00, "expected": 0.98, "conservative": 0.88},
-    100: {"optimistic": 0.99, "expected": 0.95, "conservative": 0.75},
+    4:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.99},
+    16:  {"optimistic": 1.00, "expected": 0.99, "conservative": 0.95},
+    100: {"optimistic": 1.00, "expected": 0.98, "conservative": 0.90},
+    500: {"optimistic": 0.99, "expected": 0.95, "conservative": 0.75},
 }
 
 DEFAULT_SCENARIO = "expected"
@@ -179,6 +262,9 @@ LEGITIMATE_SYSTEMS = [
     {"name": "Princeton AI cluster node (8x H100)",  "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Research"},
     {"name": "DGX A100 (8x A100 80GB)",             "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 2496, "h100_equiv": 2.52, "category": "Research"},
     {"name": "DGX H100 (8x H100 SXM)",              "gpus": 8,   "vram_gb": 640,   "tflops_fp16": 7920, "h100_equiv": 8.0,  "category": "Research"},
+    {"name": "Huawei Atlas 900 node (8x Ascend 910B)", "gpus": 8, "vram_gb": 512,  "tflops_fp16": 2560, "h100_equiv": 2.59, "category": "Research"},
+    {"name": "Google Cloud TPU v4 pod slice (8 chips)", "gpus": 8, "vram_gb": 256,  "tflops_fp16": 2200, "h100_equiv": 2.22, "category": "Cloud"},
+    {"name": "Google Cloud TPU v5e pod slice (8 chips)","gpus": 8, "vram_gb": 128,  "tflops_fp16": 1576, "h100_equiv": 1.59, "category": "Cloud"},
 ]
 
 
@@ -255,17 +341,23 @@ def activation_compression_quality(pp_compression, pp_stages, scenario=None):
     return per_boundary ** n_boundaries
 
 
-def replica_loss_multiplier(n_replicas, params_billion):
+def replica_loss_multiplier(n_replicas, params_billion, h=REPLICA_H_REF):
     """Loss multiplier from averaging n_replicas' pseudo-gradients.
     Uses power law fit to Charles et al. (2025) Table 4 (35M-2.4B, H=30):
       L(N,M)/L(N,1) = M^beta(N)  where  beta(N) = 1.0923 * N^(-0.2342)
-    Validated on 4B and 10B. Extrapolated beyond 10B.
+    H-dependent scaling: beta(N,H) = beta_0(N) * ln(H) / ln(H_ref).
+    At H=1 (DDP), beta=0 (no replica penalty). At H=H_ref=30, matches Charles.
+    Validated on 4B and 10B at H=30. Extrapolated beyond 10B and H=30.
     The compute_*_scenario() functions convert this to a FLOP penalty
     (eta_replica) via Chinchilla decomposition and fold it into eta."""
     if n_replicas <= 1:
         return 1.0
+    if h <= 1:
+        return 1.0  # H=1 is DDP: no replica divergence
     params = params_billion * 1e9
-    beta = 1.0923 * params ** (-0.2342)
+    beta_base = 1.0923 * params ** (-0.2342)
+    h_scale = math.log(h) / math.log(REPLICA_H_REF)
+    beta = beta_base * h_scale
     return n_replicas ** beta
 
 
@@ -345,9 +437,10 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                      time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                      bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
                      bw_bps=None, latency_s=None, scenario=None,
-                     target_params_b=None):
+                     target_params_b=None, h_override=None):
     """Compute all metrics for a given node configuration and node count.
     If target_params_b is specified, train that model size instead of max-VRAM.
+    If h_override is specified, use that H instead of h_min (may be comm-bound).
     The model must fit on a single node (no PP).
     Returns eta including replica penalty, eta_chinchilla for overtraining only."""
     if config_name in CONFIGS:
@@ -398,23 +491,31 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     # Minimum H for compute-bound regime (streaming DiLoCo)
     if n_nodes == 1:
         h_min = 1
+        h_used = h_override if h_override is not None else 1
         eta = 1.0
     else:
         h_min = math.ceil(t_sync / t_comp)
-        eta = efficiency(h_min, params_b, compression_ratio=compression,
+        h_used = h_override if h_override is not None else h_min
+        eta = efficiency(h_used, params_b, compression_ratio=compression,
                          scenario=scenario)
 
-    # Total local-equivalent FLOPs (compute-bound regime)
-    c_actual = n_nodes * effective_flops * time_seconds
+    # Throughput: accounts for comm-bound at low H
+    outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
+    n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
+    total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
+    c_actual = 6 * params * total_tokens
     c_local = c_actual * eta
 
     # Training details
-    total_tokens = c_actual / (6 * params)
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
-    overtraining_ratio = total_tokens / chinchilla_tokens
+    overtraining_ratio = total_tokens / chinchilla_tokens if chinchilla_tokens > 0 else 0
+
+    # Bandwidth / network metrics
+    bw_duty_cycle = t_sync / outer_step_time if outer_step_time > 0 and n_nodes > 1 else 0
+    comm_gb_per_sync = 2 * params * bits_per_pseudo_grad / compression / 8 / 1e9
 
     # Chinchilla-optimality + replica quality penalty
-    loss_mult = replica_loss_multiplier(n_nodes, params_b) if n_nodes > 1 else 1.0
+    loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
     eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
@@ -448,6 +549,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "f_straggler": f_n,
         "t_sync": t_sync,
         "h_min": h_min,
+        "h_used": h_used,
         "alpha": alpha(params_b) if n_nodes > 1 else 0,
         "eta": eta,
         "eta_replica": eta_replica,
@@ -464,6 +566,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "time_seconds": time_seconds,
         "bw_mbps": bw_bps / 1e6,
         "latency_ms": latency_s * 1000,
+        "bw_duty_cycle": bw_duty_cycle,
+        "comm_gb_per_sync": comm_gb_per_sync,
     }
 
 
@@ -560,7 +664,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     overtraining_ratio = total_tokens / chinchilla_tokens
 
     # Chinchilla-optimality + replica quality penalty
-    loss_mult = replica_loss_multiplier(n_nodes, params_b)
+    loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_eff)
     eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
                                           loss_multiplier=loss_mult)
     # Decompose: overtraining-only vs replica-only
@@ -677,7 +781,7 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     overtraining_ratio = total_tokens / chinchilla_tokens_active
 
     # Chinchilla-optimality + replica quality penalty
-    loss_mult = replica_loss_multiplier(n_nodes, total_params_b) if n_nodes > 1 else 1.0
+    loss_mult = replica_loss_multiplier(n_nodes, total_params_b, h=h_min) if n_nodes > 1 else 1.0
     eta_chin_full = chinchilla_efficiency(params_active, total_tokens, c_actual,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
@@ -843,7 +947,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     c_local = c_actual * eta
 
     # Chinchilla-optimality + replica quality penalty
-    loss_mult = replica_loss_multiplier(n_groups, target_params_b) if n_groups > 1 else 1.0
+    loss_mult = replica_loss_multiplier(n_groups, target_params_b, h=h_min) if n_groups > 1 else 1.0
     eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
                                           loss_multiplier=loss_mult) if n_groups > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
@@ -1319,9 +1423,10 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
                              time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                              bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
                              bw_bps=None, latency_s=None, scenario=None,
-                             target_params_b=None):
+                             target_params_b=None, h_override=None):
     """Compute scenario for an arbitrary config dict (not from named configs).
     If target_params_b is specified, train that model size instead of max-VRAM.
+    If h_override is specified, use that H instead of h_min (may be comm-bound).
     Returns None if target_params_b exceeds single-node VRAM capacity."""
     if "bytes_per_param" in cfg:
         bytes_per_param = cfg["bytes_per_param"]
@@ -1353,22 +1458,31 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
     if n_nodes == 1:
         h_min = 1
+        h_used = h_override if h_override is not None else 1
         eta = 1.0
     else:
         h_min = math.ceil(t_sync / t_comp)
-        eta = efficiency(h_min, params_b, compression_ratio=compression,
+        h_used = h_override if h_override is not None else h_min
+        eta = efficiency(h_used, params_b, compression_ratio=compression,
                          scenario=scenario)
 
-    c_actual = n_nodes * effective_flops * time_seconds
+    # Throughput: accounts for comm-bound at low H
+    outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
+    n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
+    total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
+    c_actual = 6 * params * total_tokens
     c_local = c_actual * eta
 
     # Training details
-    total_tokens = c_actual / (6 * params)
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
-    overtraining_ratio = total_tokens / chinchilla_tokens
+    overtraining_ratio = total_tokens / chinchilla_tokens if chinchilla_tokens > 0 else 0
+
+    # Bandwidth / network metrics
+    bw_duty_cycle = t_sync / outer_step_time if outer_step_time > 0 and n_nodes > 1 else 0
+    comm_gb_per_sync = 2 * params * bits_per_pseudo_grad / compression / 8 / 1e9
 
     # Chinchilla-optimality + replica quality penalty
-    loss_mult = replica_loss_multiplier(n_nodes, params_b) if n_nodes > 1 else 1.0
+    loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
     eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
@@ -1391,6 +1505,7 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         "max_params_b": max_params_b,
         "params_b": params_b,
         "h_min": h_min,
+        "h_used": h_used,
         "eta": eta,
         "eta_replica": eta_replica,
         "c_local": c_local,
@@ -1400,6 +1515,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         "overtraining_ratio": overtraining_ratio,
         "cost_usd": cost_usd,
         "strict_threshold_multiple": c_local / 1e24,
+        "bw_duty_cycle": bw_duty_cycle,
+        "comm_gb_per_sync": comm_gb_per_sync,
     }
 
 
@@ -1436,12 +1553,57 @@ def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
                                     bits_per_pseudo_grad=bits_per_pseudo_grad)
 
 
-def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=100000):
+def _h_candidates(h_min):
+    """Generate H values to try: h_min (compute-bound) plus lower values that
+    trade throughput for reduced replica penalty."""
+    candidates = {max(1, h_min)}
+    for h in [10, 30, 50, 100, 200]:
+        if 1 < h < h_min:
+            candidates.add(h)
+    if h_min > 60:
+        candidates.add(max(2, h_min // 2))
+    return sorted(candidates)
+
+
+def _best_over_h(compute_fn, n, h_override_supported=True):
+    """Try multiple H values at node count n, return best C_quality result.
+    compute_fn(n) uses h_min by default; compute_fn(n, h_override=h) tries
+    specific H. Falls back to default-only if h_override not supported."""
+    result_default = compute_fn(n)
+    if result_default is None:
+        return None
+    if not h_override_supported:
+        return result_default
+
+    h_min = result_default.get("h_min", result_default.get("h_used", 1))
+    best = result_default
+
+    for h in _h_candidates(h_min):
+        if h == h_min:
+            continue  # already tried as default
+        try:
+            r = compute_fn(n, h_override=h)
+        except TypeError:
+            # compute_fn doesn't support h_override
+            return best
+        if r is not None and r["c_quality"] > best["c_quality"]:
+            best = r
+    return best
+
+
+def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=100000,
+                                        search_h=False):
     """Binary search for minimum nodes where compute_fn(n)['c_quality'] >= target.
     compute_fn(n) should return a result dict or None.
+    If search_h=True, tries multiple H values at each node count (Option B).
     Returns the result dict at the minimum node count, or None if not achievable."""
+    def eval_fn(n):
+        if search_h:
+            return _best_over_h(compute_fn, n)
+        return compute_fn(n)
+
     # Check if 2 nodes suffices (minimum for DiLoCo)
-    r = compute_fn(2)
+    r = eval_fn(2)
     if r is None:
         # Try larger node counts — PP modes need more nodes
         lo, hi = 3, max_nodes
@@ -1451,19 +1613,19 @@ def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=1
         lo, hi = 3, max_nodes
 
     # Find upper bound first
-    r_hi = compute_fn(hi)
+    r_hi = eval_fn(hi)
     if r_hi is None or r_hi["c_quality"] < target_c_quality:
         return None  # Not achievable even at max_nodes
 
     while lo < hi:
         mid = (lo + hi) // 2
-        r = compute_fn(mid)
+        r = eval_fn(mid)
         if r is not None and r["c_quality"] >= target_c_quality:
             hi = mid
         else:
             lo = mid + 1
 
-    result = compute_fn(lo)
+    result = eval_fn(lo)
     if result is not None and result["c_quality"] >= target_c_quality:
         return result
     return None
@@ -1501,15 +1663,18 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
         if params_b < 1:
             continue
 
-        def flat_fn(n, pb=params_b):
+        def flat_fn(n, pb=params_b, h_override=None):
             return compute_generic_scenario(
                 cfg, n, compression=compression, bytes_per_param=bytes_per_param,
                 bits_per_pseudo_grad=bits_per_pseudo_grad, bw_bps=bw_bps,
-                latency_s=latency_s, scenario=scenario, target_params_b=pb)
+                latency_s=latency_s, scenario=scenario, target_params_b=pb,
+                h_override=h_override)
 
-        update_best(_binary_search_nodes_for_c_quality(flat_fn, target_c_quality))
+        update_best(_binary_search_nodes_for_c_quality(
+            flat_fn, target_c_quality, search_h=True))
 
     # --- Hierarchical DiLoCo at various model sizes (WAN bandwidth for regional) ---
+    # Note: hierarchical doesn't support h_override yet; search_h=False
     for frac in [0.25, 0.5, 0.75, 1.0]:
         params_b = frac * max_single_b
         if params_b < 1:
@@ -1528,7 +1693,7 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
             update_best(_binary_search_nodes_for_c_quality(hier_fn, target_c_quality))
 
     # --- PP-Group DiLoCo at larger model sizes (WAN bandwidth for PP) ---
-    # Search over activation compression ratios: 4x (well-validated) and 10x (lower confidence)
+    # Note: PP doesn't support h_override yet; search_h=False
     for pp_comp in [PP_COMPRESSION, 10]:
         for mult in [1.5, 2.0, 3.0, 4.0, 6.0, 8.0]:
             params_b = mult * max_single_b
@@ -1680,7 +1845,7 @@ def print_countermeasure_memory_threshold():
             "gpu_count": n_gpus,
             "pflops": n_gpus * 312e12 / 1e15,
             "vram_gb": n_gpus * 80,
-            "gpu_cost_usd": 15_000,
+            "gpu_cost_usd": 7_000,
             "h100_equiv": n_gpus * 312 / 990,
         }
         model_b = cfg["vram_gb"] / BYTES_PER_PARAM
@@ -1754,7 +1919,7 @@ def print_countermeasure_memory_threshold():
             "pflops": n_gpus * 1980e12 / 1e15,
             "pflops_fp16": n_gpus * 990e12 / 1e15,
             "vram_gb": n_gpus * 80,
-            "gpu_cost_usd": 30_000,
+            "gpu_cost_usd": 25_000,
             "h100_equiv": n_gpus * 1.0,
             "bytes_per_param": 14,
             "bits_per_pseudo_grad": 8,

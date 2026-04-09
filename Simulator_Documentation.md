@@ -352,18 +352,21 @@ where $C_r$ is the pseudo-gradient compression ratio and "scenario" selects from
 |:--|:--|:--|:--|
 | 1× (uncompressed) | 1.00 | 1.00 | 1.00 |
 | 4× (FP4 only) | 1.00 | 1.00 | 0.99 |
-| 16× (FP4 + 4× sparse) | 1.00 | 0.98 | 0.95 |
-| 100× (FP4 + 25× sparse, or 2-bit + TopK) | 0.99 | 0.95 | 0.90 |
+| 16× (FP4 + 4× sparse) | 1.00 | 0.99 | 0.95 |
+| 100× (2-bit + TopK, or FP4 + 25× sparse) | 1.00 | 0.98 | 0.90 |
+| 500× (speculative; ~TopK 0.3% + 2-bit) | 0.99 | 0.95 | 0.75 |
 
-For compression ratios between these thresholds, the simulator interpolates log-linearly (i.e., linearly in $\log_{10}(C_r)$). For ratios above 100×, the 100× value is used (no further extrapolation).
+For compression ratios between these thresholds, the simulator interpolates log-linearly (i.e., linearly in $\log_{10}(C_r)$). For ratios above 500×, the 500× value is used (no further extrapolation).
 
 **Justification for each threshold:**
 
-*   **4× (FP4 only):** Validated lossless at 4B parameters by [Streaming DiLoCo (Douillard et al., 2025)](https://arxiv.org/abs/2501.18512) using E3M0 format and at 15B by [MuLoCo (Li et al., 2025)](https://arxiv.org/abs/2505.23725). Conservative 1% accounts for extrapolation to 100B+ scale where outlier accumulation is possible but undemonstrated.
+*   **4× (FP4 only):** Validated lossless at 4B parameters by [Streaming DiLoCo (Douillard et al., 2025)](https://arxiv.org/abs/2501.18512) using E3M0 format and at 15B by [MuLoCo (Li et al., 2025)](https://arxiv.org/abs/2505.23725). Implicitly validated at 72B by [Covenant-72B](https://arxiv.org/abs/2603.08163), which uses 146× compression (far more aggressive than 4×). Conservative 1% accounts for extrapolation to 100B+ scale.
 
-*   **16× (FP4 + 4× sparsification):** The FP4 component is well-validated (see above). The sparsification component (retaining 25% of pseudo-gradient values) has less direct evidence at scale. Expected 2% penalty accounts for the combined extrapolation. Conservative 5% covers worst-case interactions between quantization and sparsification at 100B+ scale.
+*   **16× (FP4 + 4× sparsification):** Well within the range validated by Covenant-72B's 146× compression at 72B scale. Expected 1% penalty accounts for residual extrapolation to 100B+. Conservative 5% covers worst-case interactions at extreme scale.
 
-*   **100× (aggressive compression):** Only validated at 512M–1B scale. [SparseLoCo (Hu et al., 2025)](https://arxiv.org/abs/2508.15706) shows TopK 3% + 2-bit quantization with error feedback beats vanilla DiLoCo at 512M. [MuLoCo](https://arxiv.org/abs/2505.23725) shows 2-bit + error feedback is near-lossless at 15B. However, extrapolation to 100B+ with 2,000+ replicas and H=200+ is highly uncertain. Expected 5% penalty reflects the compounding of: (a) scale gap (~100× from 1B to 100B+), (b) untested replica counts, and (c) possible error accumulation without error feedback at very high compression. Conservative 10% covers worst-case degradation.
+*   **100× (aggressive compression):** Implicitly validated at 72B by [Covenant-72B (Lidin, Sarfi et al., 2026)](https://arxiv.org/abs/2603.08163), which uses 146× SparseLoCo compression (TopK + 2-bit + error-feedback) and achieves competitive quality with centralized models. Previously validated only at 512M–1B ([SparseLoCo](https://arxiv.org/abs/2508.15706)). Remaining uncertainty is extrapolation from 72B to 100B+ scale. Expected 2% penalty reflects this residual. Conservative 10% covers worst-case degradation at scale.
+
+*   **500× (speculative):** Not yet demonstrated. Represents the extrapolation frontier — similar in uncertainty to 100× prior to Covenant's validation. Would require ~TopK 0.3% + 2-bit quantization or comparable. Error-feedback (the key mechanism enabling high compression) is validated at 146× but untested at 500×. Expected 5% penalty and conservative 25% reflect the same type of uncertainty that 100× carried before Covenant narrowed it.
 
 **Scenarios:**
 
@@ -377,16 +380,21 @@ For compression ratios between these thresholds, the simulator interpolates log-
 *   [SparseLoCo (Hu et al., 2025)](https://arxiv.org/abs/2508.15706): TopK 3% + 2-bit at 512M params. Lossless (beats vanilla DiLoCo).
 *   [INTELLECT-1 (Jaghouar et al., 2024)](https://arxiv.org/abs/2412.01152): int8 compression at 10B params over real WAN. Negligible degradation.
 *   [DiLoCoX (Chen et al., 2025)](https://arxiv.org/abs/2506.21263): 107B model, 20 DiLoCo replicas. 0.3 loss gap vs AllReduce (not compression-specific but provides scale anchor).
+*   [Covenant-72B (Lidin, Sarfi et al., 2026)](https://arxiv.org/abs/2603.08163): SparseLoCo 146× compression (TopK 64/4096 + 2-bit + error-feedback) at 72B params, 20 replicas, H=30. Competitive with centralized LLaMA-2-70B. Largest validated compression ratio at scale.
 
-**Limitation:** The compression quality factors are engineering estimates, not published empirical measurements at 100B+ scale. The expected values should be treated as the simulator's best guess, not as established findings. See `Governance_Analysis.md`, Section 11 for the full literature review.
+**Limitation:** Compression quality at ≤146× is now validated at 72B scale (Covenant-72B). Remaining uncertainty is extrapolation from 72B to 100B+ and from 146× to higher compression ratios (500×). The 500× tier is speculative — no published experiment has demonstrated compression above 146× at any scale. The expected values for ≤100× should be treated as well-grounded estimates; the 500× values carry the same uncertainty that 100× carried prior to Covenant's publication. See `Governance_Analysis.md`, Section 11 for the full literature review.
 
 ### 4.7 Replica Count Loss Penalty
 
-$$L_{\text{replicas}}(N, M) = M^{\beta(N)} \quad\text{where}\quad \beta(N) = 1.0923 \cdot N^{-0.2342}$$
+$$L_{\text{replicas}}(N, M, H) = M^{\beta(N, H)} \quad\text{where}\quad \beta(N, H) = \beta_0(N) \cdot \frac{\ln(H)}{\ln(H_{\text{ref}})}$$
 
-where $N$ is the number of model parameters, $M$ is the number of replicas (nodes in flat DiLoCo, groups in PP-Group DiLoCo, or nodes in hierarchical DiLoCo), and $L_{\text{replicas}}$ is a **loss multiplier** (e.g. 1.015 means 1.5% loss increase).
+$$\beta_0(N) = 1.0923 \cdot N^{-0.2342}, \quad H_{\text{ref}} = 30$$
 
-**Derivation:** Power law fit to Charles et al. (2025) Table 4, which provides evaluation losses for 7 model sizes (35M–2.4B) at $M \in \{1, 2, 4, 8\}$ with $H=30$ and Chinchilla-optimal token budgets. The implied exponent $\beta$ was computed at each model size as $\beta = \ln(L_{M=8}/L_{M=1}) / \ln(8)$, then fit as $\beta(N) = c \cdot N^{-\gamma}$ via log-log regression. The fit achieves $<0.05\%$ residual error across all 7 data points. Predictions were validated against Charles et al.'s 4B and 10B results (Table 5).
+where $N$ is the number of model parameters, $M$ is the number of replicas (nodes in flat DiLoCo, groups in PP-Group DiLoCo, or nodes in hierarchical DiLoCo), $H$ is the inner steps between DiLoCo syncs, and $L_{\text{replicas}}$ is a **loss multiplier** (e.g. 1.015 means 1.5% loss increase).
+
+**H-dependence:** At $H=1$, DiLoCo reduces to standard data-parallel training (DDP), and there is no replica divergence: $\beta = 0$. At $H = H_{\text{ref}} = 30$, the formula matches the Charles et al. (2025) calibration exactly. For $H > 30$ (typical WAN scenarios: $H = 100\text{--}500$), the penalty increases logarithmically, reflecting greater inter-replica divergence. The logarithmic form is consistent with the sub-linear divergence growth predicted by Local SGD convergence theory (Stich 2019) and with the simulator's $\eta_H$ model.
+
+**Derivation of $\beta_0(N)$:** Power law fit to Charles et al. (2025) Table 4, which provides evaluation losses for 7 model sizes (35M–2.4B) at $M \in \{1, 2, 4, 8\}$ with $H=30$ and Chinchilla-optimal token budgets. The implied exponent $\beta$ was computed at each model size as $\beta = \ln(L_{M=8}/L_{M=1}) / \ln(8)$, then fit as $\beta(N) = c \cdot N^{-\gamma}$ via log-log regression. The fit achieves $<0.05\%$ residual error across all 7 data points. Predictions were validated against Charles et al.'s 4B and 10B results (Table 5).
 
 **FLOP conversion and η_replica:** The loss multiplier is converted to an effective FLOP penalty $\eta_{\text{replica}}$ via the Chinchilla scaling law. The simulator computes $\eta_{\text{chinchilla}}$ both with and without the loss multiplier:
 
@@ -398,6 +406,8 @@ where $\eta_{\text{chin,full}}$ includes the replica penalty and $\eta_{\text{ch
 
 **Example loss penalties (percentage increase):**
 
+**At $H = 30$ (Charles et al. calibration point):**
+
 | Replicas ($M$) | 2.4B model | 10B model | 100B model | 250B model |
 |:--|:--|:--|:--|:--|
 | 8 | 1.45% | 1.04% | 0.60% | 0.48% |
@@ -406,12 +416,23 @@ where $\eta_{\text{chin,full}}$ includes the replica penalty and $\eta_{\text{ch
 | 2,000 | 5.45% | 3.87% | 2.24% | 1.81% |
 | 10,000 | 6.53% | 4.64% | 2.66% | 2.14% |
 
+**H-dependence (250B model, $M = 72$):**
+
+| $H$ | $\beta / \beta_0$ | Loss increase |
+|:--|:--|:--|
+| 1 | 0× (DDP) | 0% |
+| 10 | 0.68× | 0.68% |
+| 30 | 1.00× (calibration) | 1.00% |
+| 100 | 1.35× | 1.36% |
+| 200 | 1.56× | 1.57% |
+| 500 | 1.83× | 1.84% |
+
 **Evidence:**
 *   [Charles et al. (2025), "Scaling Laws for DiLoCo"](https://arxiv.org/abs/2503.09799): Table 4 shows that at 2.4B parameters with $H=30$, $M=8$ replicas incur ~1.5% loss penalty vs $M=1$ (DiLoCo). Table 10 provides a joint scaling law $L(N,M) = 19.226 \cdot N^{-0.0985} \cdot M^{0.0116}$ with a single global $\beta=0.0116$, but fitting $\beta(N)$ separately at each model size reveals the exponent decreases monotonically from 0.019 at 35M to 0.007 at 2.4B. The paper explicitly states: "the percentage difference strictly decreases with $N$."
 *   [DiLoCoX (Chen et al., 2025)](https://arxiv.org/abs/2506.21263): 107B model, 20 replicas over 1 Gbps — observed +7.7% loss gap vs AllReduce, but this conflates replica penalty with 1000× compression and only 4,000 training steps.
 *   [Epoch AI (2024)](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale): interprets the Charles et al. data as a 1.5× FLOP multiplier at $M=8$, and projects ~6× at $M=10{,}000$. This uses a naive constant-ratio-per-doubling extrapolation.
 
-**Limitation:** The power law $\beta(N) = 1.09 \cdot N^{-0.234}$ is fit to $N \leq 2.4\text{B}$ and validated to 10B. Extrapolation to 100B+ assumes the power law decay continues, which is plausible but unconfirmed. The decay exponent $\gamma = 0.234$ means the penalty decreases slowly — at 250B the penalty is still ~1% for 72 replicas, which is **not negligible** when converted through Chinchilla scaling. The extrapolation beyond $M=8$ is also weakly supported; the power law form $M^{\beta}$ is assumed to hold at high replica counts.
+**Limitation:** (1) The base exponent $\beta_0(N) = 1.09 \cdot N^{-0.234}$ is fit to $N \leq 2.4\text{B}$ and validated to 10B. Extrapolation to 100B+ assumes the power law decay continues, which is plausible but unconfirmed. (2) The H-dependence $\ln(H)/\ln(30)$ is theoretically motivated (sub-linear divergence growth in IID Local SGD) but **not empirically validated** — no published experiment measures the replica penalty at H ≠ 30 with M > 1. The logarithmic form and the single calibration point (H=30) mean the H-dependence should be treated as a modeling choice, not an empirical fit. (3) The extrapolation beyond $M=8$ is weakly supported; the power law form $M^{\beta}$ is assumed to hold at high replica counts.
 
 ### 4.8 Activation Compression Quality
 
@@ -685,7 +706,7 @@ On top of precision, the user can apply further compression via quantization and
 5.  **Asynchronous methods:** The simulator only models synchronous protocols (DiLoCo, hierarchical DiLoCo). Fully asynchronous approaches ([Diskin et al. 2021](https://arxiv.org/abs/2106.10207)) are not modeled.
 6.  **PP mode only models forward activations.** Real pipeline parallelism also sends gradients backward through the pipeline, roughly doubling communication per micro-batch.
 7.  **EP memory model is simplified.** The EP memory reduction assumes a clean split between shared and expert parameters ($P_{\text{shared}} = P_{\text{active}}$). Real MoE architectures may have routing layers, load-balancing buffers, and token-drop buffers that add overhead beyond this estimate.
-8.  **Compression quality factors are extrapolations.** The $\eta_{\text{compression}}$ values at 16× and 100× are engineering estimates based on experiments at 512M–15B parameters (see §4.6). No published experiment has measured compression quality degradation at the 100B+ scale the simulator targets. The three-scenario approach (optimistic/expected/conservative) is designed to bound this uncertainty rather than resolve it.
+8.  **Compression quality above 146× is unvalidated.** Covenant-72B validates 146× compression at 72B scale, narrowing uncertainty for ≤100× to residual 72B→100B+ extrapolation. The 500× tier is speculative — no experiment has demonstrated compression above 146× at any scale. The three-scenario approach (optimistic/expected/conservative) bounds this uncertainty (see §4.6).
 9.  **Replica penalty is weakly calibrated.** The replica loss multiplier formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. The FLOP penalty $\eta_{\text{replica}}$ is derived by converting this loss multiplier through the Chinchilla scaling law, which amplifies small loss increases into large FLOP penalties (e.g., 0.3% loss → 23% FLOP penalty at 165B). This amplification is sensitive to the operating point on the loss curve. The extrapolation beyond $M=8$ and beyond 10B parameters is weakly supported.
 10. **Efficiency components are modeled as independent.** The efficiency factors ($\eta_H$, $\eta_{\text{compression}}$, $\eta_{\text{act}}$, $\eta_{\text{replica}}$) are multiplied independently. In reality, larger H produces more divergent pseudo-gradients that may be harder to compress (negative interaction) or may have lower effective rank that compresses better (positive interaction). The joint interaction of all factors has never been tested at the 100B+ scale.
 11. **Activation compression depth risk.** The activation compression quality model (Section 4.8) assumes independent, multiplicative errors at each pipeline boundary, yielding an exponential depth penalty $q^{2(S-1)}$. In practice, errors may correlate across boundaries (e.g., systematic quantization bias in certain feature dimensions), making the penalty either better or worse than the independent-error model predicts. For deep pipelines ($S \geq 5$), the compounded penalty exceeds 19% at 4x compression, which may be optimistic if errors are correlated or pessimistic if error cancellation occurs. No published work validates activation compression quality across multiple sequential pipeline boundaries.
