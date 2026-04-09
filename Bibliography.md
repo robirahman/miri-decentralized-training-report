@@ -363,10 +363,10 @@ https://nousresearch.com/distro/
 - **In simulator:** No. Claims are not yet supported by peer-reviewed results at scale. The simulator's compression settings (up to 16× default) reflect published, validated compression ratios.
 
 **SparseLoCo (Sarfi et al., 2025)**
-https://arxiv.org/abs/2508.13077
-- **Findings:** Sparse local optimization for communication-efficient distributed training.
-- **Relevance:** Additional approach to reducing communication in distributed training.
-- **In simulator:** No. The simulator's compression parameter captures the general effect of communication reduction techniques without modeling specific approaches.
+https://arxiv.org/abs/2508.15706
+- **Findings:** Top-k sparsification + low-bit quantization + error-feedback for DiLoCo pseudo-gradients. At 512M parameters, TopK 3% + 2-bit achieves lossless compression (matches or beats vanilla DiLoCo). Error-feedback accumulates compression residuals across rounds, ensuring no information is permanently lost. Achieves Pareto-optimal communication–quality tradeoff.
+- **Relevance:** Basis for the 100× compression quality estimates. Error-feedback is the key mechanism enabling very high compression ratios without convergence degradation. Used in Covenant-72B at 146× compression.
+- **In simulator:** Yes. Source of the 100× compression quality estimate (Section 4.6). The 512M validation scale and extrapolation to 100B+ is flagged as a limitation.
 
 ---
 
@@ -377,10 +377,15 @@ https://arthurdouillard.com/diloco/index.html
 - **Description:** Web-based tool for estimating DiLoCo communication overhead. The MIRI simulator is a superset of this tool, extending it with memory-triggered mode switching, pipeline parallelism, hierarchical topology, MoE support, and algorithmic efficiency penalties.
 - **In simulator:** The MIRI simulator replicates this tool as a special case when hierarchy is disabled and the model fits in single-node VRAM.
 
-**Covenant-72B (Covenant AI)**
+**Covenant-72B: Pre-Training a 72B LLM with Trustless Peers Over-the-Internet (Lidin, Sarfi, Miahi et al., 2026)**
+https://arxiv.org/abs/2603.08163
+- **Findings:** Largest decentralized pre-training run to date: 72B dense LLaMA-3-style model trained on 1.1T tokens using SparseLoCo (Top-k=64 + 2-bit quantization + error-feedback, >146× compression) with permissionless participation on a blockchain (Bittensor). H=30, R=20 contributing peers (8× B200 each), 70+ unique peers over the run. Achieved 94.5% compute utilization (20 min compute, 70s communication per round). Competitive with centralized LLaMA-2-70B (2T tokens) on MMLU (67.1% vs 65.6%), ARC-Challenge (56.8% vs 57.4%), ARC-Easy (80.9% vs 79.6%). No training loss or perplexity values published — only downstream benchmark scores.
+- **Relevance:** First validation of decentralized training at 72B scale. Confirms high compute utilization with aggressive compression. Validates SparseLoCo error-feedback at 146× compression, far beyond the simulator's 100× estimates. The model is undertrained (0.6× Chinchilla ratio: 1.1T tokens vs 1.84T optimal for 72B), so benchmark comparisons with LLaMA-2-70B (overtrained at 1.4× Chinchilla) are confounded by token budget differences. Absence of training loss prevents direct validation of the simulator's efficiency penalty predictions.
+- **In simulator:** Partially. Compute utilization (94.5%) closely matches the simulator's streaming DiLoCo prediction (~94%). Communication time (70s observed vs ~87s predicted at 110 Mbps) is within 25%. Inner step compute time (40s observed vs 12s predicted) suggests effective per-node MFU is ~12% rather than 40%, likely due to FSDP sharding overhead at 72B on 8 GPUs. The 146× compression working at 72B scale suggests the simulator's compression quality estimates at 100× (η = 0.95 expected) may be conservative — SparseLoCo's error-feedback appears more robust than the simulator models. The replica penalty (M=20 at 72B) is not independently testable without published training loss values.
+
+**Covenant-72B model weights (Covenant AI)**
 https://huggingface.co/CovenantAI/Covenant-72B
-- **Description:** Example of a 72B model trained using decentralized methods. Demonstrates practical feasibility of decentralized training at non-trivial scale.
-- **In simulator:** Not directly. Existence proof for decentralized training at the ~70B scale.
+- **Description:** Open-source pre-training and post-training checkpoints under Apache License.
 
 **Protocol Models (Pluralis Research)**
 https://pluralis.ai

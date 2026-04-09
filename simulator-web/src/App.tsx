@@ -81,6 +81,25 @@ function chinchillaEfficiency(params: number, tokens: number, cFlop: number,
   return Math.min(1.0, cEffective / cFlop)
 }
 
+// Hardware presets: max sub-CCC node for each chip type (≤16 H100-equivalents FP16)
+const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; label: string; group: string }> = {
+  'custom':       { pflops: 16,    vram: 2304, label: 'Custom',               group: '' },
+  // NVIDIA
+  '50xA100':      { pflops: 15.60, vram: 4000, label: '50x A100 80GB',        group: 'NVIDIA' },
+  '16xH100':      { pflops: 15.84, vram: 1280, label: '16x H100 SXM',         group: 'NVIDIA' },
+  '16xGH200':     { pflops: 15.84, vram: 2304, label: '16x GH200',            group: 'NVIDIA' },
+  '9xB100':       { pflops: 15.75, vram: 1728, label: '9x B100',              group: 'NVIDIA' },
+  '7xB200':       { pflops: 15.75, vram: 1344, label: '7x B200',              group: 'NVIDIA' },
+  // Chinese chips
+  '49xAscend910B':{ pflops: 15.68, vram: 3136, label: '49x Ascend 910B',      group: 'Chinese' },
+  '26xAscend910C':{ pflops: 15.60, vram: 3328, label: '26x Ascend 910C',      group: 'Chinese' },
+  // Google TPUs (BF16 TFLOPS as FP16-equivalent)
+  '57xTPUv4':     { pflops: 15.68, vram: 1824, label: '57x TPU v4',           group: 'Google TPU' },
+  '80xTPUv5e':    { pflops: 15.76, vram: 1280, label: '80x TPU v5e',          group: 'Google TPU' },
+  '34xTPUv5p':    { pflops: 15.61, vram: 3230, label: '34x TPU v5p',          group: 'Google TPU' },
+  '17xTPUv6e':    { pflops: 15.61, vram: 544,  label: '17x TPU v6e',          group: 'Google TPU' },
+}
+
 const Tooltip = ({ text }: { text: string }) => (
   <div className="tooltip-container">
     ⓘ
@@ -143,6 +162,7 @@ function App() {
   const [expertParallelism, setExpertParallelism] = useState('none') // none, regional, global
   
   // Hardware Parameters
+  const [hwPreset, setHwPreset] = useState('custom')
   const [numNodes, setNumNodes] = useState(72)
   const [pflopsPerNode, setPflopsPerNode] = useState(16) // Sub-CCC node (≤16 H100-equiv)
   const [vramPerNode, setVramPerNode] = useState(2304) // 16x 144GB
@@ -548,26 +568,53 @@ function App() {
             <span>ms</span>
           </div>
           <div className="input-group">
+            <label>Hardware Preset: <Tooltip text="Select a pre-configured sub-CCC node (max accelerators under 16 H100-equiv compute threshold). Selecting a preset sets VRAM and PFLOPS automatically." /></label>
+            <select
+              value={hwPreset}
+              onChange={(e) => {
+                const key = e.target.value
+                setHwPreset(key)
+                if (key !== 'custom') {
+                  const p = HARDWARE_PRESETS[key]
+                  setPflopsPerNode(p.pflops)
+                  setVramPerNode(p.vram)
+                }
+              }}
+              style={{ background: '#2a2a2a', color: '#e2e8f0', border: '1px solid #475569', padding: '6px 10px', borderRadius: '6px', fontSize: '0.9em' }}
+            >
+              <option value="custom">Custom</option>
+              {['NVIDIA', 'Chinese', 'Google TPU'].map(group => (
+                <optgroup key={group} label={group}>
+                  {Object.entries(HARDWARE_PRESETS)
+                    .filter(([, v]) => v.group === group)
+                    .map(([k, v]) => (
+                      <option key={k} value={k}>{v.label} ({v.vram} GB, {v.pflops} PFLOPS)</option>
+                    ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="input-group">
             <label>Node VRAM (GB): <Tooltip text="Total HBM memory available per node across all its GPUs." /></label>
-            <input 
-              type="number" 
-              min="8" 
-              max="5000" 
-              step="8" 
-              value={vramPerNode} 
-              onChange={(e) => setVramPerNode(Number(e.target.value))} 
+            <input
+              type="number"
+              min="8"
+              max="5000"
+              step="8"
+              value={vramPerNode}
+              onChange={(e) => { setVramPerNode(Number(e.target.value)); setHwPreset('custom') }}
             />
             <span>GB</span>
           </div>
           <div className="input-group">
             <label>Node PFLOPS: <Tooltip text="Peak theoretical FP16/BF16 performance per node." /></label>
-            <input 
-              type="number" 
-              min="1" 
-              max="1000" 
-              step="1" 
-              value={pflopsPerNode} 
-              onChange={(e) => setPflopsPerNode(Number(e.target.value))} 
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              step="1"
+              value={pflopsPerNode}
+              onChange={(e) => { setPflopsPerNode(Number(e.target.value)); setHwPreset('custom') }}
             />
             <span>PFLOPS</span>
           </div>

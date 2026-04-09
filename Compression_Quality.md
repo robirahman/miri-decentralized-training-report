@@ -30,6 +30,7 @@ where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). 
 | [SparseLoCo](https://arxiv.org/abs/2508.15706) (2025) | 512M-2B, R=8-16 | TopK 3% + 2-bit (~50-100x) | **Beats vanilla DiLoCo** at 3% density | Error feedback essential; regularizing effect |
 | [INTELLECT-1](https://arxiv.org/abs/2412.01152) (Prime Intellect, 2024) | 10B, 14 nodes | int8 pseudo-grads (400x total) | Negligible | Real-world WAN validation |
 | [DiLoCoX](https://arxiv.org/abs/2506.21263) (0G Labs, 2025) | 107B, 20 nodes | Low-rank + int4 | 0.3 loss gap vs AllReduce | First 100B+ DiLoCo experiment |
+| [Covenant-72B](https://arxiv.org/abs/2603.08163) (Lidin, Sarfi et al., 2026) | **72B**, 20 nodes, H=30 | SparseLoCo TopK 64/4096 + 2-bit + EF (**146x**) | **Competitive with centralized LLaMA-2-70B** | Largest validated compression at scale |
 | [Deep Gradient Compression](https://arxiv.org/abs/1712.01887) (Lin, 2018) | ResNet-50, DeepSpeech | Up to 600x | Lossless with error feedback | Vision/speech models, not LLMs |
 | [Aragani et al.](https://arxiv.org/abs/2502.07634) (2025) | LSTMs, transformers | TopK/DGC up to 5000x | 50x can improve via regularization; >5000x degrades | |
 
@@ -40,15 +41,16 @@ where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). 
 - 4-bit quantization is lossless at up to 15B parameters with 16 replicas (MuLoCo)
 - DiLoCo's efficiency penalty decreases with model size (confirmed 35M-10B, DiLoCo Scaling Laws)
 - int8 compression works in practice over real WAN at 10B (INTELLECT-1)
+- **146× SparseLoCo compression (TopK + 2-bit + error-feedback) produces competitive quality at 72B parameters with 20 replicas (Covenant-72B)**
 
-**Partially validated (medium confidence):**
-- 16x compression (FP4 + 4x sparsification): the FP4 component is well-validated; the sparsification component is tested at 512M (SparseLoCo) but not at 100B+
-- DiLoCo at 100B+ scale: DiLoCoX demonstrates feasibility but shows a 0.3 loss gap versus AllReduce
+**Partially validated (medium-high confidence):**
+- 16× and 100× compression at 72B+ scale: implicitly validated by Covenant-72B's 146× result. Remaining uncertainty is extrapolation from 72B to 100B+.
+- DiLoCo at 100B+ scale: DiLoCoX demonstrates feasibility at 107B but shows a 0.3 loss gap versus AllReduce (confounded with compression)
 
 **Extrapolated (low-medium confidence):**
-- 100x compression at 100B+ scale: only validated at 512M-1B; extrapolation spans ~100x in model size
-- 2000+ replicas: largest empirical test is M=16 (MuLoCo); [Epoch AI projects](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale) that 10,000 nodes would require ~6x FLOP for equivalent quality
-- H=200-2000 combined with aggressive compression: largest tested is H=125 with compression (DiLoCoX at 107B)
+- 500× compression: not demonstrated at any scale; similar extrapolation risk as 100× had prior to Covenant
+- 2000+ replicas: largest empirical test is M=20 (Covenant-72B); [Epoch AI projects](https://epoch.ai/gradient-updates/how-far-can-decentralized-training-over-the-internet-scale) that 10,000 nodes would require ~6x FLOP for equivalent quality
+- H=200-2000 combined with aggressive compression: largest tested is H=125 with compression (DiLoCoX at 107B); Covenant uses H=30 only
 
 ## 4. Key Risk Factors
 
@@ -73,7 +75,7 @@ where $\eta_{\text{act-compression}} = 1$ for flat DiLoCo (no pipeline stages). 
 
 The most important revision is to the bandwidth sensitivity headline: the frequently cited "3-6% reduction" referred only to the $\eta_H$ penalty from larger H values, not the total efficiency gap including compression quality. With compression quality included, the total expected gap between optimal (1 Gbps, no compression penalty) and degraded (10 Mbps, expected compression quality) is **12-14%** for 16x compression and **14-18%** for 100x. The qualitative conclusion — that DiLoCo is robust to bandwidth constraints — remains valid, but the quantitative magnitude is larger.
 
-The core governance conclusions (Sections 6-7 of the Governance Analysis) are robust across all compression quality scenarios because they rely on 16x pseudo-gradient compression, which is well-validated. The 10^27 scenarios (Section 8) carry meaningful uncertainty, particularly Config F's 100x compression assumption, and should be interpreted as estimates with a +-10% error bar rather than precise predictions.
+The core governance conclusions (Sections 6-7 of the Governance Analysis) are robust across all compression quality scenarios because they rely on 16× pseudo-gradient compression, which is well-validated at 72B by Covenant-72B. The 10^27 scenarios (Section 8) using 100× compression now carry less uncertainty than before Covenant's publication (100× is well within the 146× validated range), though Config F's results should still be interpreted as estimates with a ±5% error bar. The speculative 500× tier is not used in any primary analysis and carries the largest uncertainty.
 
 ## 6. Activation Compression: Evidence for PP-Group DiLoCo
 
