@@ -124,7 +124,20 @@ Note: The GPipe bubble (1.1) and Zero Bubble PP (2.1) overlap — together they 
 - **Flat DiLoCo:** The simulator underestimates effective compute by an estimated **15-25%** if all currently-researched techniques are successfully scaled. With only proven techniques and conservative parameter choices, the underestimate is **5-10%**.
 - **Pipeline-parallel DiLoCo:** The simulator underestimates effective compute by an estimated **20-40%** due to the GPipe bubble being the largest single source of conservatism.
 
-## 4. What This Means for Policy
+## 4. Chinchilla Amplification Uncertainty
+
+The simulator converts loss degradation to FLOP-equivalents via the Chinchilla scaling law. This conversion amplifies small loss differences at large model sizes: at 250B, a 1.6% loss increase translates to a ~79% FLOP penalty because only 5% of total loss is improvable (see [Scaling_Law_Uncertainty.md](Scaling_Law_Uncertainty.md) for the full analysis).
+
+This amplification is sensitive to the scaling exponents $\alpha$ and $\beta$, which are fit to models up to ~16B. Within the formal 95% CI on $\alpha$ alone ($\pm 0.02$), the FLOP penalty for the same raw loss ranges from ~52% to ~98%. Unlike the conservatisms in Sections 1–3, this uncertainty is **not directionally conservative** — it could go either way.
+
+The direction matters for governance:
+
+- If the true $\alpha$ is **smaller** (flatter curve): the amplification is less severe, $C_{\text{quality}}$ is higher, and distributed training produces **more capable** models than the simulator estimates. Evasion is easier.
+- If the true $\alpha$ is **larger** (steeper curve): amplification is more severe, $C_{\text{quality}}$ is lower, and evasion produces less capable models.
+
+The simulator's default $\alpha = 0.348$ is a mid-range estimate. The conclusions most affected are absolute $C_{\text{quality}}$ figures at 100B+ scale; hardware costs, node counts, and qualitative feasibility assessments are unaffected.
+
+## 5. What This Means for Policy
 
 The simulator's conservatism is deliberate: it models what is achievable with techniques proven at scale, not what might be achievable with cutting-edge research. This is the appropriate baseline for governance analysis because:
 

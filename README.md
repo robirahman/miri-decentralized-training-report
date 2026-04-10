@@ -18,6 +18,7 @@ This project investigates:
 - **[Decentralized Training Simulator](Decentralized%20training%20simulator/)** — Python simulator estimating time-to-train for LLMs over bandwidth-constrained networks, comparing DiLoCo, DDP, and pipeline parallelism
 - **[Web Simulator](simulator-web/)** — Interactive browser-based version of the simulator
 - **[Compression Quality](Compression_Quality.md)** — Analysis of gradient compression techniques and their impact on training quality
+- **[Scaling Law Uncertainty](Scaling_Law_Uncertainty.md)** — Analysis of how Chinchilla scaling law parameter uncertainty affects the FLOP-equivalence conversion
 - **[Traffic Fingerprinting Analysis](Traffic_Fingerprinting_Analysis.md)** — How network traffic analysis could detect illicit distributed training
 - **[CCC VRAM Amendment](CCC_VRAM_Amendment.md)** — Proposed treaty amendment adding a VRAM threshold to the covered compute cluster definition
 
