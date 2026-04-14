@@ -63,7 +63,7 @@ For PP-Group DiLoCo (model sharded across pipeline stages):
 
 $$\eta = \eta_H \times \eta_{\text{pg-compression}} \times \eta_{\text{replicas}} \times \eta_{\text{act-compression}}$$
 
-The simulator also computes **quality-adjusted compute** $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{Chinchilla}}$, which accounts for the quality cost of training a non-optimally-sized model (Section 5.4).
+The simulator also computes **quality-adjusted compute** $C_{\text{quality}} = C_{\text{local}} \times \chi$, which accounts for the quality cost of training a non-optimally-sized model (Section 5.4).
 
 **Sync interval penalty ($\eta_H$):** The primary efficiency loss from using large H (many inner steps between synchronization). More inner steps cause replicas to diverge further from each other, reducing the quality of the averaged pseudo-gradient:
 
@@ -121,7 +121,7 @@ The simulator's predictions carry different levels of confidence depending on th
 
 All results use the **expected** compression quality scenario (Section 4.2). Optimistic values (no compression penalty) and conservative values are shown in parentheses where they differ materially.
 
-| Nodes | GPUs | Est. Cost | H | $\eta$ | C_local (FLOP) | x Threshold | OT Ratio | $\eta_{\text{chin}}$ | C_quality (FLOP) |
+| Nodes | GPUs | Est. Cost | H | $\eta$ | C_local (FLOP) | x Threshold | OT Ratio | $\chi$ | C_quality (FLOP) |
 |:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
 | 1 | 50 | $0.8M | 1 | 1.000 | 2.95 x 10^23 | 0.3x | 0.0x | 1.000 | 2.95 x 10^23 |
 | 4 | 200 | $3.0M | 175 | 0.861 | **1.02 x 10^24** | **1.0x** | 0.1x | 0.772 | 7.86 x 10^23 |
@@ -132,11 +132,11 @@ All results use the **expected** compression quality scenario (Section 4.2). Opt
 | 144 | 7,200 | $108M | 216 | 0.856 | 3.64 x 10^25 | 36.4x | 4.4x | 0.736 | 2.68 x 10^25 |
 | 500 | 25,000 | $375M | 230 | 0.854 | 1.26 x 10^26 | 126.2x | 15.4x | 0.430 | 5.43 x 10^25 |
 
-The **overtraining ratio** (OT) is the ratio of actual training tokens to the Chinchilla-optimal token count ($D^* = 25.6 \times N$, per the [corrected Chinchilla scaling law](https://arxiv.org/abs/2404.10102)). The **Chinchilla efficiency** $\eta_{\text{chin}}$ quantifies the compute-allocation penalty from training a non-optimally-sized model relative to Chinchilla-optimal. **C_quality** $= C_{\text{local}} \times \eta_{\text{chin}}$ is the quality-adjusted compute — the amount of optimally-allocated compute that would produce the same model quality.
+The **overtraining ratio** (OT) is the ratio of actual training tokens to the Chinchilla-optimal token count ($D^* = 25.6 \times N$, per the [corrected Chinchilla scaling law](https://arxiv.org/abs/2404.10102)). The **Chinchilla efficiency** $\chi$ quantifies the compute-allocation penalty from training a non-optimally-sized model relative to Chinchilla-optimal. **C_quality** $= C_{\text{local}} \times \chi$ is the quality-adjusted compute — the amount of optimally-allocated compute that would produce the same model quality.
 
-**Note on overtraining in practice:** The Chinchilla scaling law minimizes the loss of a single forward pass per training FLOP. In practice, developers intentionally overtrain models because each trained model is used for many inference calls. A moderately overtrained smaller model provides better cost-efficiency at inference time than a Chinchilla-optimal larger model, because inference cost scales with model size. When a model's lifetime inference compute approximately equals its training compute, moderate overtraining (2-10x) is optimal from a total-cost perspective. The $\eta_{\text{chin}}$ metric is therefore a conservative (pessimistic) measure of effective compute: it overstates the practical cost of overtraining, particularly in the 2-10x range where production models typically operate. Only extreme overtraining (>50x) represents unambiguous waste regardless of inference amortization.
+**Note on overtraining in practice:** The Chinchilla scaling law minimizes the loss of a single forward pass per training FLOP. In practice, developers intentionally overtrain models because each trained model is used for many inference calls. A moderately overtrained smaller model provides better cost-efficiency at inference time than a Chinchilla-optimal larger model, because inference cost scales with model size. When a model's lifetime inference compute approximately equals its training compute, moderate overtraining (2-10x) is optimal from a total-cost perspective. The $\chi$ metric is therefore a conservative (pessimistic) measure of effective compute: it overstates the practical cost of overtraining, particularly in the 2-10x range where production models typically operate. Only extreme overtraining (>50x) represents unambiguous waste regardless of inference amortization.
 
-At 72 nodes, C_quality = 1.62 x 10^25, reflecting the mild overtraining (2.2x) of a 250B model — well within the range that developers actively prefer. At 500 nodes, overtraining reaches 15.4x and $\eta_{\text{chin}}$ drops to 0.43. While 15x overtraining is beyond what developers typically choose, the real quality penalty is smaller than $\eta_{\text{chin}}$ suggests due to inference amortization. Nonetheless, at very large node counts the overtraining ratio becomes extreme (123x at 4,000 nodes), motivating the PP-Group DiLoCo analysis in Section 5.4, where larger models reduce overtraining.
+At 72 nodes, C_quality = 1.62 x 10^25, reflecting the mild overtraining (2.2x) of a 250B model — well within the range that developers actively prefer. At 500 nodes, overtraining reaches 15.4x and $\chi$ drops to 0.43. While 15x overtraining is beyond what developers typically choose, the real quality penalty is smaller than $\chi$ suggests due to inference amortization. Nonetheless, at very large node counts the overtraining ratio becomes extreme (123x at 4,000 nodes), motivating the PP-Group DiLoCo analysis in Section 5.4, where larger models reduce overtraining.
 
 The 72-node reference point shows $\eta = 0.857$ under the expected scenario (optimistic: 0.874; conservative: 0.831). Varying compression quality alone gives a C_local range of 1.77-1.86 x 10^25 FLOP (~18x). However, this narrow range understates the true uncertainty because it holds several other uncertain quantities fixed. Accounting for realistic variation in MFU (30-45% vs. the assumed 40%), hardware availability over 18 months, the straggler model coefficient (an engineering estimate, not empirically calibrated at this scale), effective network bandwidth, and DiLoCo convergence behavior at 250B (extrapolated from experiments at ≤10B parameters), the plausible range widens to approximately **7-23x the Strict Threshold**. The core conclusion — that 72 nodes exceeds the threshold by a large margin — is robust even at the pessimistic end of this range.
 
@@ -153,11 +153,11 @@ The evader trains a **250B-parameter dense model** in flat DiLoCo mode. Using th
 | 32 | 6.3T | 6.4T | 1.0x | Near Chinchilla-optimal |
 | 72 | 14.2T | 6.4T | 2.2x | **Moderately overtrained** (industry-standard; preferred for production) |
 | 144 | 28.4T | 6.4T | 4.4x | Overtrained (still practical; comparable to LLaMA-3 at ~10x) |
-| 500 | 98.5T | 6.4T | 15.4x | Heavily overtrained (beyond typical practice; $\eta_{\text{chin}} = 0.43$) |
+| 500 | 98.5T | 6.4T | 15.4x | Heavily overtrained (beyond typical practice; $\chi = 0.43$) |
 
-At the **72-node** reference point: 250B params trained on 14.2T tokens with 2.2x overtraining is not a penalty — it is in fact the preferred regime for production deployments, where inference amortization makes moderate overtraining cost-optimal. This is comparable to how production models like LLaMA-3 are trained (which used ~10x overtraining). The $\eta_{\text{chin}} = 0.89$ represents a conservative lower bound; accounting for inference amortization, the effective penalty of 2.2x overtraining is negligible.
+At the **72-node** reference point: 250B params trained on 14.2T tokens with 2.2x overtraining is not a penalty — it is in fact the preferred regime for production deployments, where inference amortization makes moderate overtraining cost-optimal. This is comparable to how production models like LLaMA-3 are trained (which used ~10x overtraining). The $\chi = 0.89$ represents a conservative lower bound; accounting for inference amortization, the effective penalty of 2.2x overtraining is negligible.
 
-At **500+ nodes**, overtraining reaches 15x, which is beyond what developers typically choose but not catastrophic — the real quality penalty is smaller than $\eta_{\text{chin}} = 0.43$ suggests. However, at 4,000 nodes the ratio reaches 123x, which represents genuine waste even accounting for inference amortization. The Chinchilla-optimal model for 500 nodes' compute budget is ~980B — far larger than the 250B that fits on a single node. This motivates PP-Group DiLoCo (Section 5.4), where pipeline stages allow training larger models.
+At **500+ nodes**, overtraining reaches 15x, which is beyond what developers typically choose but not catastrophic — the real quality penalty is smaller than $\chi = 0.43$ suggests. However, at 4,000 nodes the ratio reaches 123x, which represents genuine waste even accounting for inference amortization. The Chinchilla-optimal model for 500 nodes' compute budget is ~980B — far larger than the 250B that fits on a single node. This motivates PP-Group DiLoCo (Section 5.4), where pipeline stages allow training larger models.
 
 For small node counts (N < 16), the evader would train a proportionally smaller model to stay near Chinchilla-optimal. For example, at N=4 with C_local = 10^24 FLOP, the Chinchilla-optimal model is ~29B params on ~0.7T tokens, which fits easily within the 250B memory budget.
 
@@ -182,7 +182,7 @@ The flat DiLoCo results in Section 5.1 all train the largest model that fits on 
 
 **Model size sweep results (expected scenario):**
 
-| Nodes | Best Mode | Model | PP Stages | Groups | OT | $\eta$ | $\eta_{\text{chin}}$ | C_quality | vs Flat 250B |
+| Nodes | Best Mode | Model | PP Stages | Groups | OT | $\eta$ | $\chi$ | C_quality | vs Flat 250B |
 |:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
 | 72 | DiLoCo | 250B | 1 | 72 | 2.2x | 0.857 | 0.891 | 1.62 x 10^25 | 1.0x |
 | 500 | PP-DiLoCo | 500B | 2 | 250 | 2.0x | 0.851 | 0.911 | 5.83 x 10^25 | 1.07x |
@@ -296,7 +296,7 @@ The analysis in Sections 5-7 focuses on modest-scale evasion (4-500 nodes). This
 
 Nine configurations are compared, all using sub-CCC nodes over 100 Mbps WAN. All values use the **expected** compression quality scenario. The table now includes **C_quality** (quality-adjusted compute accounting for Chinchilla-optimality deviation):
 
-| Config | Hardware | Nodes | Model | $\eta$ | C_local | $\eta_{\text{chin}}$ | C_quality |
+| Config | Hardware | Nodes | Model | $\eta$ | C_local | $\chi$ | C_quality |
 |:--|:--|:--|:--|:--|:--|:--|:--|
 | **A** | 50x A100 FP16, flat DiLoCo, 16x | 4,000 | 250B dense | 0.852 | 1.01 x 10^27 | 0.113 | 1.14 x 10^26 |
 | **B** | 50x A100 FP16, hierarchical, 16x | 4,000 | 250B dense | 0.882 | 1.04 x 10^27 | 0.113 | 1.18 x 10^26 |
@@ -316,7 +316,7 @@ Hierarchical configurations use groups of 8 nodes with 1 Gbps regional interconn
 
 **10^27 FLOP requires 2,000-4,000 sub-CCC nodes ($1-3B in hardware).** This is unambiguously a state-actor-level investment. No non-state actor could plausibly acquire 32,000-192,000 GPUs without detection through the treaty's financial monitoring and chip tracking provisions (Section 6.8).
 
-**C_local vs C_quality: a critical distinction.** The table reveals a dramatic divergence between raw compute (C_local) and quality-adjusted compute (C_quality). Configs A-F achieve 10^27 C_local, but their C_quality ranges from only 2.3 x 10^25 (Config C) to 1.2 x 10^26 (Config B). The reason: all flat DiLoCo configurations at 2,000-4,000 nodes massively overtrain their fixed-size models — Config A trains 123x more tokens than Chinchilla-optimal for 250B. Note that $\eta_{\text{chin}}$ is a conservative metric that overstates the practical cost of overtraining (see Section 5.1 for discussion of inference amortization); however, at the extreme levels seen here (123x-934x), the overtraining is genuinely excessive even accounting for inference. **PP-Group DiLoCo (Config H) achieves the highest C_quality** (2.78 x 10^26) by training a 960B model closer to Chinchilla-optimal, despite lower raw throughput.
+**C_local vs C_quality: a critical distinction.** The table reveals a dramatic divergence between raw compute (C_local) and quality-adjusted compute (C_quality). Configs A-F achieve 10^27 C_local, but their C_quality ranges from only 2.3 x 10^25 (Config C) to 1.2 x 10^26 (Config B). The reason: all flat DiLoCo configurations at 2,000-4,000 nodes massively overtrain their fixed-size models — Config A trains 123x more tokens than Chinchilla-optimal for 250B. Note that $\chi$ is a conservative metric that overstates the practical cost of overtraining (see Section 5.1 for discussion of inference amortization); however, at the extreme levels seen here (123x-934x), the overtraining is genuinely excessive even accounting for inference. **PP-Group DiLoCo (Config H) achieves the highest C_quality** (2.78 x 10^26) by training a 960B model closer to Chinchilla-optimal, despite lower raw throughput.
 
 **PP-Group DiLoCo is the most effective strategy at scale.** Config H (PP-DiLoCo, 4 stages, 960B model, 1,000 groups) achieves 2.78 x 10^26 C_quality — **2.4x more than the best flat DiLoCo** (Config B, 1.18 x 10^26) and **12x more than the best H100 FP8 flat configuration** (Config D, 2.37 x 10^25). The cost is lower raw throughput (C_local = 3.36 x 10^26 vs 1.04 x 10^27) due to fewer groups and PP bubble overhead, but the larger model makes far better use of each FLOP.
 

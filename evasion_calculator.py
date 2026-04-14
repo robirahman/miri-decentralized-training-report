@@ -81,7 +81,7 @@ CONFIGS = {
 
 # Network (asymmetric WAN — upload is typically the bottleneck)
 BW_UP_MBPS = 100          # WAN upload bandwidth (Mbps)
-BW_DOWN_MBPS = 500        # WAN download bandwidth (Mbps)
+BW_DOWN_MBPS = 100        # WAN download bandwidth (Mbps)
 BW_UP_BPS = BW_UP_MBPS * 1e6    # bits/s
 BW_DOWN_BPS = BW_DOWN_MBPS * 1e6  # bits/s
 LATENCY_S = 0.1           # 100 ms RTT
@@ -430,7 +430,7 @@ def chinchilla_optimal_allocation(c_flop, overtrain_target=1.0):
 def chinchilla_efficiency(params, tokens, c_flop, loss_multiplier=1.0,
                           overtrain_target=1.0):
     """Fraction of compute that is 'effective' vs reference-optimal allocation.
-    Returns eta_chinchilla in [0, 1]. At reference-optimal returns ~1.0.
+    Returns χ (chi) in [0, 1]. At reference-optimal returns ~1.0.
     overtrain_target: the overtraining ratio considered "optimal" (default 1.0).
       At 3.0, a 3x-overtrained model scores eta=1.0.
     loss_multiplier > 1.0 models quality degradation (e.g., from replica averaging).
@@ -475,7 +475,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     If target_params_b is specified, train that model size instead of max-VRAM.
     If h_override is specified, use that H instead of h_min (may be comm-bound).
     The model must fit on a single node (no PP).
-    Returns eta including replica penalty, eta_chinchilla for overtraining only."""
+    Returns eta including replica penalty, χ for overtraining only."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
     else:
@@ -542,8 +542,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
     n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
     total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
-    c_actual = 6 * params * total_tokens
-    c_local = c_actual * eta
+    c_throughput = 6 * params * total_tokens
+    c_local = c_throughput * eta
 
     # Training details
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
@@ -555,17 +555,17 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
-    eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
-    eta_chin_ot = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi = chinchilla_efficiency(params, total_tokens, c_throughput,
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
-    eta_replica = eta_chin_full / eta_chin_ot if eta_chin_ot > 0 else 0
+    eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty into eta; C_local is now true local-equivalent
     eta = eta * eta_replica
-    c_local = c_actual * eta
-    c_quality = c_local * eta_chin_ot
+    c_local = c_throughput * eta
+    c_quality = c_local * chi
 
     # Cost
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
@@ -592,9 +592,9 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "alpha": alpha(params_b) if n_nodes > 1 else 0,
         "eta": eta,
         "eta_replica": eta_replica,
-        "c_actual": c_actual,
+        "c_throughput": c_throughput,
         "c_local": c_local,
-        "eta_chinchilla": eta_chin_ot,
+        "chi": chi,
         "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "chinchilla_tokens_T": chinchilla_tokens / 1e12,
@@ -623,7 +623,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     If cfg is provided, use it directly instead of looking up config_name.
     If target_params_b is specified, train that model size instead of max-VRAM.
     Returns None if target_params_b exceeds single-node VRAM capacity.
-    Returns eta including replica penalty, eta_chinchilla for overtraining only."""
+    Returns eta including replica penalty, χ for overtraining only."""
     if cfg is None:
         if config_name in CONFIGS:
             cfg = CONFIGS[config_name]
@@ -705,27 +705,27 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
                      scenario=scenario, error_feedback=error_feedback)
 
     # Total local-equivalent FLOPs
-    c_actual = n_nodes * effective_flops * time_seconds
-    c_local = c_actual * eta
+    c_throughput = n_nodes * effective_flops * time_seconds
+    c_local = c_throughput * eta
 
     # Training details
-    total_tokens = c_actual / (6 * params)
+    total_tokens = c_throughput / (6 * params)
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_eff)
-    eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
                                           loss_multiplier=loss_mult)
     # Decompose: overtraining-only vs replica-only
-    eta_chin_ot = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi = chinchilla_efficiency(params, total_tokens, c_throughput,
                                         loss_multiplier=1.0)
-    eta_replica = eta_chin_full / eta_chin_ot if eta_chin_ot > 0 else 0
+    eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty into eta; C_local is now true local-equivalent
     eta = eta * eta_replica
-    c_local = c_actual * eta
-    c_quality = c_local * eta_chin_ot
+    c_local = c_throughput * eta
+    c_quality = c_local * chi
 
     # Cost
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
@@ -753,9 +753,9 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
         "alpha": alpha(params_b),
         "eta": eta,
         "eta_replica": eta_replica,
-        "c_actual": c_actual,
+        "c_throughput": c_throughput,
         "c_local": c_local,
-        "eta_chinchilla": eta_chin_ot,
+        "chi": chi,
         "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "chinchilla_tokens_T": chinchilla_tokens / 1e12,
@@ -827,27 +827,27 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     # Total local-equivalent FLOPs (based on active params compute rate)
     # Adjust for EP latency overhead
     ep_overhead = t_ep / (t_comp + t_ep)
-    c_actual = n_nodes * effective_flops * time_seconds * (1 - ep_overhead)
-    c_local = c_actual * eta
+    c_throughput = n_nodes * effective_flops * time_seconds * (1 - ep_overhead)
+    c_local = c_throughput * eta
 
     # Training details (based on active params)
-    total_tokens = c_actual / (6 * params_active)
+    total_tokens = c_throughput / (6 * params_active)
     chinchilla_tokens_active = CHINCHILLA_TOKENS_PER_PARAM * params_active
     overtraining_ratio = total_tokens / chinchilla_tokens_active
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, total_params_b, h=h_min) if n_nodes > 1 else 1.0
-    eta_chin_full = chinchilla_efficiency(params_active, total_tokens, c_actual,
+    chi_full = chinchilla_efficiency(params_active, total_tokens, c_throughput,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
-    eta_chin_ot = chinchilla_efficiency(params_active, total_tokens, c_actual,
+    chi = chinchilla_efficiency(params_active, total_tokens, c_throughput,
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
-    eta_replica = eta_chin_full / eta_chin_ot if eta_chin_ot > 0 else 0
+    eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty into eta; C_local is now true local-equivalent
     eta = eta * eta_replica
-    c_local = c_actual * eta
-    c_quality = c_local * eta_chin_ot
+    c_local = c_throughput * eta
+    c_quality = c_local * chi
 
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
@@ -869,9 +869,9 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
         "h_min": h_min,
         "eta": eta,
         "eta_replica": eta_replica,
-        "c_actual": c_actual,
+        "c_throughput": c_throughput,
         "c_local": c_local,
-        "eta_chinchilla": eta_chin_ot,
+        "chi": chi,
         "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "overtraining_ratio": overtraining_ratio,
@@ -906,7 +906,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
 
     If cfg is provided, use it directly instead of looking up config_name.
     Returns None if insufficient nodes to form at least 2 groups.
-    Returns eta including replica penalty, eta_chinchilla for overtraining only."""
+    Returns eta including replica penalty, χ for overtraining only."""
     if cfg is None:
         if config_name in CONFIGS:
             cfg = CONFIGS[config_name]
@@ -1005,22 +1005,22 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     n_outer_steps = time_seconds / outer_step_time
     total_tokens = n_outer_steps * h_min * LOCAL_BATCH * n_groups
 
-    c_actual = 6 * params * total_tokens
-    c_local = c_actual * eta
+    c_throughput = 6 * params * total_tokens
+    c_local = c_throughput * eta
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_groups, target_params_b, h=h_min) if n_groups > 1 else 1.0
-    eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
                                           loss_multiplier=loss_mult) if n_groups > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
-    eta_chin_ot = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi = chinchilla_efficiency(params, total_tokens, c_throughput,
                                         loss_multiplier=1.0) if n_groups > 1 else 1.0
-    eta_replica = eta_chin_full / eta_chin_ot if eta_chin_ot > 0 else 0
+    eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty into eta; C_local is now true local-equivalent
     eta = eta * eta_replica
-    c_local = c_actual * eta
-    c_quality = c_local * eta_chin_ot
+    c_local = c_throughput * eta
+    c_quality = c_local * chi
 
     # Overtraining
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
@@ -1045,8 +1045,8 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
         "eta_activation": eta_act,
         "eta": eta,
         "eta_replica": eta_replica,
-        "eta_chinchilla": eta_chin_ot,
-        "c_actual": c_actual,
+        "chi": chi,
+        "c_throughput": c_throughput,
         "c_local": c_local,
         "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
@@ -1131,7 +1131,7 @@ def print_model_size_sweep(config_name, n_nodes, compression=COMPRESSION,
 
     print(f"\n--- {n_nodes} nodes, {config_name} (Chinchilla-optimal: ~{n_opt/1e9:.0f}B, max single-node: {max_b:.0f}B) ---")
     print(f"\n  {'Mode':>12} | {'Model':>7} | {'PP':>2} | {'Groups':>6} | {'OT':>6} | "
-          f"{'eta':>5} | {'eta_act':>7} | {'eta_chin':>8} | {'C_local':>10} | {'C_quality':>10}")
+          f"{'eta':>5} | {'eta_act':>7} | {'chi':>8} | {'C_local':>10} | {'C_quality':>10}")
     print("  " + "-" * 105)
 
     results = sweep_model_sizes(config_name, n_nodes, compression=compression,
@@ -1146,13 +1146,13 @@ def print_model_size_sweep(config_name, n_nodes, compression=COMPRESSION,
         ot = r.get("overtraining_ratio", 0)
         eta = r.get("eta", 0)
         eta_act = r.get("eta_activation", 1.0)
-        eta_chin = r.get("eta_chinchilla", 1.0)
+        chi_val = r.get("chi", 1.0)
         c_local = r.get("c_local", 0)
         c_quality = r.get("c_quality", 0)
         marker = " *" if r is best else ""
 
         print(f"  {mode:>12} | {model_str:>7} | {pp:>2} | {groups:>6} | {ot:>5.1f}x | "
-              f"{eta:>5.3f} | {eta_act:>7.3f} | {eta_chin:>8.3f} | {c_local:>10.2e} | "
+              f"{eta:>5.3f} | {eta_act:>7.3f} | {chi_val:>8.3f} | {c_local:>10.2e} | "
               f"{c_quality:>10.2e}{marker}")
 
     if best:
@@ -1177,7 +1177,7 @@ def print_config_summary(config_name):
 def print_results_table(config_name):
     print(f"\n{'N':>5} | {'GPUs':>7} | {'Cost':>8} | {'f(N)':>5} | {'H_min':>5} | "
           f"{'eta':>5} | {'C_local':>10} | {'x10^24':>7} | {'Model':>6} | "
-          f"{'Tokens':>7} | {'OT ratio':>8} | {'eta_chin':>8} | {'C_quality':>10}")
+          f"{'Tokens':>7} | {'OT ratio':>8} | {'chi':>8} | {'C_quality':>10}")
     print("-" * 135)
 
     for n in NODE_COUNTS:
@@ -1188,7 +1188,7 @@ def print_results_table(config_name):
         model_str = f"{r['max_params_b']:.0f}B"
         tokens_str = f"{r['total_tokens_T']:.1f}T"
         ot_str = f"{r['overtraining_ratio']:.1f}x"
-        echin_str = f"{r['eta_chinchilla']:.3f}"
+        echin_str = f"{r['chi']:.3f}"
         cq_str = f"{r['c_quality']:.2e}"
 
         print(f"{n:>5} | {r['total_gpus']:>7,} | {cost_str:>8} | {r['f_straggler']:>5.3f} | "
@@ -1206,7 +1206,7 @@ def print_detailed(config_name, n_nodes):
     print(f"  Min inner steps H:  {r['h_min']}")
     print(f"  Alpha:              {r['alpha']:.5f}")
     print(f"  Efficiency eta:       {r['eta']:.4f}")
-    print(f"  C_actual:           {r['c_actual']:.3e} FLOP")
+    print(f"  C_throughput:       {r['c_throughput']:.3e} FLOP")
     print(f"  C_local:            {r['c_local']:.3e} FLOP (local-equivalent)")
     print(f"  x Strict Threshold: {r['strict_threshold_multiple']:.1f}x")
     print(f"  Model:              {r['max_params_b']:.0f}B params")
@@ -1307,7 +1307,7 @@ def print_10e27_comparison():
 
     print(f"\n{'Config':>35} | {'Nodes':>5} | {'GPUs':>7} | {'Cost':>8} | "
           f"{'Model':>18} | {'eta':>5} | {'C_local':>10} | {'x10^24':>7} | "
-          f"{'eta_chin':>8} | {'C_quality':>10}")
+          f"{'chi':>8} | {'C_quality':>10}")
     print("-" * 145)
 
     for label, r in scenarios:
@@ -1321,7 +1321,7 @@ def print_10e27_comparison():
             model_str = f"{r['params_b']:.0f}B PP-{r['pp_stages']}x{r['n_groups']}"
         else:
             model_str = f"{r.get('max_params_b', r.get('params_b', 0)):.0f}B dense"
-        echin = r.get('eta_chinchilla', 1.0)
+        echin = r.get('chi', 1.0)
         cq = r.get('c_quality', r['c_local'])
 
         print(f"{label:>35} | {r['n_nodes']:>5} | {r['total_gpus']:>7,} | "
@@ -1568,8 +1568,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
     n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
     total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
-    c_actual = 6 * params * total_tokens
-    c_local = c_actual * eta
+    c_throughput = 6 * params * total_tokens
+    c_local = c_throughput * eta
 
     # Training details
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
@@ -1581,17 +1581,17 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
-    eta_chin_full = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
                                           loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
     # Decompose: overtraining-only vs replica-only
-    eta_chin_ot = chinchilla_efficiency(params, total_tokens, c_actual,
+    chi = chinchilla_efficiency(params, total_tokens, c_throughput,
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
-    eta_replica = eta_chin_full / eta_chin_ot if eta_chin_ot > 0 else 0
+    eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty into eta; C_local is now true local-equivalent
     eta = eta * eta_replica
-    c_local = c_actual * eta
-    c_quality = c_local * eta_chin_ot
+    c_local = c_throughput * eta
+    c_quality = c_local * chi
 
     cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
 
@@ -1607,7 +1607,7 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         "eta": eta,
         "eta_replica": eta_replica,
         "c_local": c_local,
-        "eta_chinchilla": eta_chin_ot,
+        "chi": chi,
         "c_quality": c_quality,
         "total_tokens_T": total_tokens / 1e12,
         "overtraining_ratio": overtraining_ratio,
@@ -2293,8 +2293,8 @@ if __name__ == "__main__":
     r2 = compute_scenario("16x GH200", 72)
     print(f"\n2. 72xGH200 C_local: {r2['c_local']:.2e} FLOP")
     print(f"   Existing baseline: 1.02e25 FLOP (raw C=6PD for 144Bx12T tokens)")
-    print(f"   Our C_actual for 72 nodes: {r2['c_actual']:.2e}")
-    ratio = r2['c_actual'] / 1.02e25
+    print(f"   Our C_throughput for 72 nodes: {r2['c_throughput']:.2e}")
+    ratio = r2['c_throughput'] / 1.02e25
     print(f"   Ratio: {ratio:.2f}x")
     print(f"   Note: Baseline used 32 PFLOPS/node; we use 15.84 -> ratio should be ~{15.84/32:.2f}x")
 
@@ -2352,9 +2352,9 @@ if __name__ == "__main__":
     print(f"   D/N ratio = {d_opt/n_opt:.1f} (expected 25.6)")
     print(f"   {'PASS' if abs(n_opt/1e9 - 100) < 1 and abs(d_opt/n_opt - 25.6) < 0.1 else 'CHECK'}")
 
-    # Check 10: eta_chinchilla = 1.0 at optimal allocation
+    # Check 10: χ = 1.0 at optimal allocation
     eta_at_opt = chinchilla_efficiency(n_opt, d_opt, c_test)
-    print(f"\n10. eta_chinchilla at optimal = {eta_at_opt:.4f}")
+    print(f"\n10. chi at optimal = {eta_at_opt:.4f}")
     print(f"    {'PASS' if eta_at_opt > 0.99 else 'CHECK'}")
 
     # Check 11: C_quality <= C_local always

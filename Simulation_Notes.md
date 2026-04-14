@@ -50,7 +50,7 @@ Under the [MIRI treaty proposal](https://arxiv.org/abs/2511.10783), clusters exc
 
 *   **Minimum to reach threshold:** ~4 nodes (192 A100s, ~$3M)
 *   **Reference case (72 nodes):** 240B model, 14.2T tokens, 3x Chinchilla overtraining
-*   **Chinchilla optimality (72 nodes):** DiLoCo 240B is the optimal model size at 72 nodes. The model is overtrained at 3x Chinchilla ratio ($D/N = 76.8$ vs optimal $D^* = 25.6N$), yielding $\eta_{\text{chinchilla}} = 0.884$ and $C_{\text{quality}} = 1.55 \times 10^{25}$. Smaller models (e.g., 144B) fit more comfortably but have lower total capacity; larger models (e.g., 480B) require PP-Group DiLoCo, which reduces throughput enough to offset the capacity gain at this node count.
+*   **Chinchilla optimality (72 nodes):** DiLoCo 240B is the optimal model size at 72 nodes. The model is overtrained at 3x Chinchilla ratio ($D/N = 76.8$ vs optimal $D^* = 25.6N$), yielding $\chi = 0.884$ and $C_{\text{quality}} = 1.55 \times 10^{25}$. Smaller models (e.g., 144B) fit more comfortably but have lower total capacity; larger models (e.g., 480B) require PP-Group DiLoCo, which reduces throughput enough to offset the capacity gain at this node count.
 *   **Bottleneck:** Compute-bound (H optimized to balance compute and communication)
 *   **Algorithmic efficiency:** Stable at ~86% across all node counts (η = η_H × η_compression × η_replicas)
 
@@ -245,7 +245,7 @@ Note: "Reg. Burden" refers to the registration, reporting, and inspection obliga
 
 ## Scenario 6: Model Size Optimization — PP vs DiLoCo Tradeoff
 
-Evaluates the tradeoff between model size, training mode (DiLoCo vs PP-Group DiLoCo), and Chinchilla-optimal scaling across key hardware configurations. Uses the model size sweep (`sweep_model_sizes()`) to find the model that maximizes quality-adjusted compute $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$.
+Evaluates the tradeoff between model size, training mode (DiLoCo vs PP-Group DiLoCo), and Chinchilla-optimal scaling across key hardware configurations. Uses the model size sweep (`sweep_model_sizes()`) to find the model that maximizes quality-adjusted compute $C_{\text{quality}} = C_{\text{local}} \times \chi$.
 
 ### Motivation
 

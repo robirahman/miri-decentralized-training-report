@@ -19,7 +19,7 @@ $$L(N, D) = E + \frac{A}{N^\alpha} + \frac{B}{D^\beta}$$
 Two simulator quantities depend critically on this law:
 
 - **$\eta_{\text{replica}}$** (§4.7): converts the replica loss multiplier into a FLOP penalty via binary search for the optimally-allocated compute that achieves the degraded loss.
-- **$\eta_{\text{chinchilla}}$** (§4.9): converts overtraining into a FLOP penalty via the same mechanism.
+- **$\chi$** (§4.9): converts overtraining into a FLOP penalty via the same mechanism.
 
 Both use the scaling law's shape to translate small loss differences into compute-equivalent penalties.
 
@@ -138,7 +138,7 @@ These metrics diverge at large scale precisely because of the Chinchilla amplifi
 | Cost of evasion ($3M–$50M) | No (hardware cost) | **Yes** |
 | Memory threshold constrains model size | No (direct VRAM constraint) | **Yes** |
 | PP-DiLoCo enables larger models at scale | Weakly (PP overhead is compute, not loss) | **Yes** |
-| $C_{\text{quality}} = 1.55 \times 10^{25}$ at 72 nodes | **Yes** (η_replica, η_chinchilla) | **Uncertain** |
+| $C_{\text{quality}} = 1.55 \times 10^{25}$ at 72 nodes | **Yes** (η_replica, χ) | **Uncertain** |
 | 10^26 $C_{\text{quality}}$ is infeasible | **Yes** (C_quality ceiling depends on amplification) | **Uncertain** |
 | Bandwidth matters moderately (6–12% range) | Weakly (η_H is independent of Chinchilla) | **Mostly yes** |
 

@@ -172,7 +172,7 @@ function App() {
   const [pflopsPerNode, setPflopsPerNode] = useState(16) // Sub-CCC node (≤16 H100-equiv)
   const [vramPerNode, setVramPerNode] = useState(2304) // 16x 144GB
   const [bandwidthUpMbps, setBandwidthUpMbps] = useState(100)
-  const [bandwidthDownMbps, setBandwidthDownMbps] = useState(500)
+  const [bandwidthDownMbps, setBandwidthDownMbps] = useState(100)
   const [latencyMs, setLatencyMs] = useState(100) // Inter-node ping
   const [mfu, setMfu] = useState(0.4)
 
@@ -382,8 +382,8 @@ function App() {
     const globalHfu = globalMfu / 0.8 // MFU is ~80% of HFU per research
 
     // Chinchilla quality: penalizes over/under-training + replica loss degradation
-    const etaChinchilla = chinchillaEfficiency(parameters, tokens, theoreticalFlops, replicaLossMult)
-    const cQuality = theoreticalFlops * totalEfficiency * etaChinchilla
+    const chi = chinchillaEfficiency(parameters, tokens, theoreticalFlops, replicaLossMult)
+    const cQuality = theoreticalFlops * totalEfficiency * chi
 
     // Calculate Dynamic Max Training Run (Epoch - The Longest Training Run)
     // Formula: L = 1 / (gH + gS + gI)
@@ -417,7 +417,7 @@ function App() {
       etaCompression: (etaCompression * 100).toFixed(1),
       etaReplicas: ((replicaLossMult - 1) * 100).toFixed(2),
       etaActivation: (etaActivation * 100).toFixed(1),
-      etaChinchilla: (etaChinchilla * 100).toFixed(1),
+      chi: (chi * 100).toFixed(1),
       globalMfu: (globalMfu * 100).toFixed(1),
       globalHfu: (globalHfu * 100).toFixed(1),
       isSharded,
@@ -908,7 +908,7 @@ function App() {
                 <p style={{ fontWeight: 600, marginTop: '8px' }}>{results.feasibility}</p>
                 <div style={{ fontSize: '0.85em', color: '#64748b', marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <span>{results.efficiency}% total efficiency ({results.etaH}% sync × {results.etaCompression}% compress{results.etaActivation !== '100.0' ? ` × ${results.etaActivation}% act.compress` : ''})</span>
-                  <span>Chinchilla efficiency: {results.etaChinchilla}%{results.etaReplicas !== '0.00' ? ` (incl. +${results.etaReplicas}% replica loss)` : ''}</span>
+                  <span>χ (Chinchilla efficiency): {results.chi}%{results.etaReplicas !== '0.00' ? ` (incl. +${results.etaReplicas}% replica loss)` : ''}</span>
                   <span>Global MFU: <span style={{ color: results.globalMfu < 20 ? '#f43f5e' : '#94a3b8' }}>{results.globalMfu}%</span> | HFU: {results.globalHfu}%</span>
                 </div>
                 {results.globalMfu < 20 && (
@@ -950,7 +950,7 @@ function App() {
               <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #38bdf8' }}>
                 <p style={{ color: '#38bdf8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Quality-Adjusted Compute
-                  <Tooltip text="C_quality = C_local × eta_total × eta_Chinchilla. Accounts for DiLoCo efficiency loss, compression quality, replica penalty, activation compression, and Chinchilla sub-optimality. This is the effective compute for comparison with centralized training." />
+                  <Tooltip text="C_quality = C_local × η × χ. Accounts for DiLoCo efficiency loss, compression quality, replica penalty, activation compression, and Chinchilla sub-optimality. This is the effective compute for comparison with centralized training." />
                 </p>
                 <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#38bdf8' }}>
                   {formatFlops(results.cQuality)} FLOP

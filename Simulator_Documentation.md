@@ -300,9 +300,9 @@ $$\eta_H = \max\!\left(0.4,\;\frac{1 - \alpha \cdot \log_{10}(H_{\text{eff}})}{P
 
 **Interpretation:** $C_{\text{local}} = N \times \text{FLOPS}_{\text{eff}} \times T_{\text{wall}} \times \eta$ is the **true local-equivalent compute**: the amount of single-datacenter compute that would produce the same model quality if the model were Chinchilla-optimally sized. The efficiency factors are independent and multiplicative.
 
-**Chinchilla efficiency** $\eta_{\text{chinchilla}}$ (§4.9) captures only the **overtraining penalty** — the cost of training a model that is too small for the available compute. It does NOT include the replica divergence penalty, which is already folded into $\eta_{\text{replica}}$. The final quality-adjusted compute is $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$.
+$\chi$ **(Chinchilla efficiency,** §4.9**)** captures only the **overtraining penalty** — the cost of training a model that is too small for the available compute. It does NOT include the replica divergence penalty, which is already folded into $\eta_{\text{replica}}$. The final quality-adjusted compute is $C_{\text{quality}} = C_{\text{local}} \times \chi$.
 
-**Replica penalty decomposition:** The replica count loss multiplier (§4.7) is converted to a FLOP penalty ($\eta_{\text{replica}}$) by computing $\eta_{\text{chinchilla}}$ with and without the loss multiplier and taking the ratio: $\eta_{\text{replica}} = \eta_{\text{chin,full}} / \eta_{\text{chin,OT}}$. This properly accounts for the nonlinear Chinchilla amplification effect: at 100B+ scale, the improvable portion of the loss is small (~6% of total), so a 0.3% loss increase from replicas translates to a ~23% FLOP penalty.
+**Replica penalty decomposition:** The replica count loss multiplier (§4.7) is converted to a FLOP penalty ($\eta_{\text{replica}}$) by computing $\chi$ (Chinchilla efficiency) with and without the loss multiplier and taking the ratio: $\eta_{\text{replica}} = \chi_{\text{full}} / \chi_{\text{OT}}$. This properly accounts for the nonlinear Chinchilla amplification effect: at 100B+ scale, the improvable portion of the loss is small (~6% of total), so a 0.3% loss increase from replicas translates to a ~23% FLOP penalty.
 
 ### 4.2 Logarithmic Decay with $H$
 
@@ -396,11 +396,11 @@ where $N$ is the number of model parameters, $M$ is the number of replicas (node
 
 **Derivation of $\beta_0(N)$:** Power law fit to Charles et al. (2025) Table 4, which provides evaluation losses for 7 model sizes (35M–2.4B) at $M \in \{1, 2, 4, 8\}$ with $H=30$ and Chinchilla-optimal token budgets. The implied exponent $\beta$ was computed at each model size as $\beta = \ln(L_{M=8}/L_{M=1}) / \ln(8)$, then fit as $\beta(N) = c \cdot N^{-\gamma}$ via log-log regression. The fit achieves $<0.05\%$ residual error across all 7 data points. Predictions were validated against Charles et al.'s 4B and 10B results (Table 5).
 
-**FLOP conversion and η_replica:** The loss multiplier is converted to an effective FLOP penalty $\eta_{\text{replica}}$ via the Chinchilla scaling law. The simulator computes $\eta_{\text{chinchilla}}$ both with and without the loss multiplier:
+**FLOP conversion and η_replica:** The loss multiplier is converted to an effective FLOP penalty $\eta_{\text{replica}}$ via the Chinchilla scaling law. The simulator computes $\chi$ (Chinchilla efficiency) both with and without the loss multiplier:
 
-$$\eta_{\text{replica}} = \frac{\eta_{\text{chin,full}}}{\eta_{\text{chin,OT}}}$$
+$$\eta_{\text{replica}} = \frac{\chi_{\text{full}}}{\chi_{\text{OT}}}$$
 
-where $\eta_{\text{chin,full}}$ includes the replica penalty and $\eta_{\text{chin,OT}}$ captures overtraining only. $\eta_{\text{replica}}$ is then folded into the combined efficiency $\eta$ (see §4.1), making $C_{\text{local}}$ a true local-equivalent metric. $\eta_{\text{chinchilla}}$ in the result dict captures only the overtraining penalty.
+where $\chi_{\text{full}}$ includes the replica penalty and $\chi_{\text{OT}}$ captures overtraining only. $\eta_{\text{replica}}$ is then folded into the combined efficiency $\eta$ (see §4.1), making $C_{\text{local}}$ a true local-equivalent metric. $\chi$ (Chinchilla efficiency) in the result dict captures only the overtraining penalty.
 
 **Chinchilla amplification:** The Chinchilla scaling law is highly nonlinear: at 100B+ scale, the improvable portion of the loss (above the irreducible minimum $E \approx 1.82$) is only ~6% of total loss. A 0.3% increase in total loss is ~5% of the improvable portion, which through the scaling exponent (~0.18) requires ~27% more compute to overcome. This means even small loss multipliers from replica divergence translate to substantial FLOP penalties: at 3 replicas/165B, the 0.3% loss increase becomes a ~21% FLOP penalty ($\eta_{\text{replica}} \approx 0.79$).
 
@@ -503,21 +503,21 @@ $$N_{\text{opt}} = \sqrt{\frac{C}{153.6}}, \quad D_{\text{opt}} = 25.6 \cdot N_{
 
 #### Chinchilla Efficiency Metric
 
-$\eta_{\text{chinchilla}}$ captures only the **overtraining penalty** — the cost of training a model that is too small for the available compute. The replica divergence penalty is separately handled via $\eta_{\text{replica}}$ (§4.7) and folded into $\eta$.
+$\chi$ (Chinchilla efficiency) captures only the **overtraining penalty** — the cost of training a model that is too small for the available compute. The replica divergence penalty is separately handled via $\eta_{\text{replica}}$ (§4.7) and folded into $\eta$.
 
-The simulator computes $\eta_{\text{chinchilla}}$ via binary search, using `loss_multiplier=1.0` (no replica penalty):
+The simulator computes $\chi$ via binary search, using `loss_multiplier=1.0` (no replica penalty):
 
 1.  Find the *actual* loss $L_{\text{actual}} = L(N_{\text{actual}}, D_{\text{actual}})$ for the scenario's model size and token count.
 2.  Binary-search for the compute budget $C'$ such that $L(N'_{\text{opt}}, D'_{\text{opt}}) = L_{\text{actual}}$, where $(N'_{\text{opt}}, D'_{\text{opt}})$ is the Chinchilla-optimal allocation at $C'$.
-3.  The Chinchilla efficiency is $\eta_{\text{chinchilla}} = C' / C_{\text{actual}}$.
+3.  The Chinchilla efficiency is $\chi = C' / C_{\text{actual}}$.
 
-This gives the fraction of raw compute that is "useful" after accounting for sub-optimal model sizing. A scenario that trains a model 3x larger than Chinchilla-optimal (undertrained) will have $\eta_{\text{chinchilla}} < 1$.
+This gives the fraction of raw compute that is "useful" after accounting for sub-optimal model sizing. A scenario that trains a model 3x larger than Chinchilla-optimal (undertrained) will have $\chi < 1$.
 
 #### Quality-Adjusted Compute
 
 All scenario functions return:
 
-$$C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$$
+$$C_{\text{quality}} = C_{\text{local}} \times \chi$$
 
 where $C_{\text{local}} = N \times \text{FLOPS}_{\text{eff}} \times T_{\text{wall}} \times \eta$ already includes all distributed training penalties (sync interval, compression, activation compression, and replica divergence). $C_{\text{quality}}$ is the headline metric for comparing scenarios: it represents the amount of optimally-allocated single-datacenter compute that would produce the same model quality.
 
@@ -560,13 +560,13 @@ The `sweep_model_sizes()` function evaluates both DiLoCo and PP-DiLoCo at a rang
 
 1.  If the model fits in single-node VRAM: evaluate as DiLoCo (Mode A).
 2.  If the model requires sharding: evaluate as PP-Group DiLoCo (Mode C).
-3.  Compute $C_{\text{quality}} = C_{\text{local}} \times \eta_{\text{chinchilla}}$ for each.
+3.  Compute $C_{\text{quality}} = C_{\text{local}} \times \chi$ for each.
 
 The sweep identifies the model size that maximizes $C_{\text{quality}}$, which balances:
-*   **Larger models:** higher capacity but undertrained relative to Chinchilla ($\eta_{\text{chinchilla}} < 1$) and may require PP (reducing throughput).
+*   **Larger models:** higher capacity but undertrained relative to Chinchilla ($\chi < 1$) and may require PP (reducing throughput).
 *   **Smaller models:** better Chinchilla fit and no PP overhead, but lower total capability.
 
-`print_model_size_sweep()` formats the sweep results showing model size, mode (DiLoCo vs PP-DiLoCo), $\eta$, $C_{\text{local}}$, $\eta_{\text{chinchilla}}$, and $C_{\text{quality}}$ for each candidate.
+`print_model_size_sweep()` formats the sweep results showing model size, mode (DiLoCo vs PP-DiLoCo), $\eta$, $C_{\text{local}}$, $\chi$ (Chinchilla efficiency), and $C_{\text{quality}}$ for each candidate.
 
 ---
 
@@ -710,7 +710,7 @@ On top of precision, the user can apply further compression via quantization and
 9.  **Replica penalty is weakly calibrated.** The replica loss multiplier formula (§4.7) is calibrated to $M \leq 8$ at 2.4B parameters. The FLOP penalty $\eta_{\text{replica}}$ is derived by converting this loss multiplier through the Chinchilla scaling law, which amplifies small loss increases into large FLOP penalties (e.g., 0.3% loss → 23% FLOP penalty at 165B). This amplification is sensitive to the operating point on the loss curve. The extrapolation beyond $M=8$ and beyond 10B parameters is weakly supported.
 10. **Efficiency components are modeled as independent.** The efficiency factors ($\eta_H$, $\eta_{\text{compression}}$, $\eta_{\text{act}}$, $\eta_{\text{replica}}$) are multiplied independently. In reality, larger H produces more divergent pseudo-gradients that may be harder to compress (negative interaction) or may have lower effective rank that compresses better (positive interaction). The joint interaction of all factors has never been tested at the 100B+ scale.
 11. **Activation compression depth risk.** The activation compression quality model (Section 4.8) assumes independent, multiplicative errors at each pipeline boundary, yielding an exponential depth penalty $q^{2(S-1)}$. In practice, errors may correlate across boundaries (e.g., systematic quantization bias in certain feature dimensions), making the penalty either better or worse than the independent-error model predicts. For deep pipelines ($S \geq 5$), the compounded penalty exceeds 19% at 4x compression, which may be optimistic if errors are correlated or pessimistic if error cancellation occurs. No published work validates activation compression quality across multiple sequential pipeline boundaries.
-12. **Chinchilla scaling law extrapolation and amplification.** The Chinchilla loss function $L(N,D)$ from Besiroglu et al. (2024) is fit to dense transformer models in the 70M–16B parameter range. The simulator extrapolates this to 100B–1T scale. The exponents $\alpha = 0.348 \pm 0.02$ and $\beta = 0.366 \pm 0.02$ drive a **Chinchilla amplification effect**: at 250B, only 5% of total loss is improvable, so even a 1.6% loss degradation consumes 31% of the improvable portion and translates to a ~79% FLOP penalty. Within the formal 95% CI on $\alpha$ alone, the same raw loss penalty produces FLOP penalties ranging from ~52% to ~98%. This sensitivity to the exponents is the dominant source of uncertainty in any $C_{\text{quality}}$ calculation involving $\eta_{\text{replica}}$ or $\eta_{\text{chinchilla}}$. Published 70B+ training losses cannot constrain the exponents because of tokenizer incompatibilities and uncontrolled overtraining ratios across model families. See [Scaling_Law_Uncertainty.md](Scaling_Law_Uncertainty.md) for the full analysis. Results at the extremes of the model size sweep (e.g., 960B dense models) should be interpreted with particular caution.
+12. **Chinchilla scaling law extrapolation and amplification.** The Chinchilla loss function $L(N,D)$ from Besiroglu et al. (2024) is fit to dense transformer models in the 70M–16B parameter range. The simulator extrapolates this to 100B–1T scale. The exponents $\alpha = 0.348 \pm 0.02$ and $\beta = 0.366 \pm 0.02$ drive a **Chinchilla amplification effect**: at 250B, only 5% of total loss is improvable, so even a 1.6% loss degradation consumes 31% of the improvable portion and translates to a ~79% FLOP penalty. Within the formal 95% CI on $\alpha$ alone, the same raw loss penalty produces FLOP penalties ranging from ~52% to ~98%. This sensitivity to the exponents is the dominant source of uncertainty in any $C_{\text{quality}}$ calculation involving $\eta_{\text{replica}}$ or $\chi$ (Chinchilla efficiency). Published 70B+ training losses cannot constrain the exponents because of tokenizer incompatibilities and uncontrolled overtraining ratios across model families. See [Scaling_Law_Uncertainty.md](Scaling_Law_Uncertainty.md) for the full analysis. Results at the extremes of the model size sweep (e.g., 960B dense models) should be interpreted with particular caution.
 
 ---
 
