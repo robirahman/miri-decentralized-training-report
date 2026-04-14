@@ -42,6 +42,30 @@ https://epoch.ai/data/trends
 - **Relevance:** Empirical validation source for the simulator's MFU assumptions.
 - **In simulator:** Used to calibrate the default 40% MFU and validate the MFU/HFU = 0.8 ratio.
 
+**Chinchilla Scaling: A Replication Attempt (Besiroglu et al., 2024)**
+https://arxiv.org/abs/2404.10102
+- **Findings:** Corrected Hoffmann et al.'s Approach 3 parameters, finding D* ≈ 25.6N (vs. ~20N in the original). Provides updated exponents α = 0.348, β = 0.366 and irreducible loss E = 1.82.
+- **Relevance:** The corrected scaling law is the basis for the simulator's Chinchilla efficiency (χ) and replica penalty (η_replica) calculations. Also defines the Chinchilla-optimal baseline against which overtraining ratios are measured.
+- **In simulator:** Yes. The simulator uses Besiroglu's corrected parameters as defaults (Section 4.9).
+
+**Beyond Chinchilla-Optimal: Accounting for Inference in Language Model Scaling Laws (Sardana et al., 2024)**
+https://arxiv.org/abs/2401.00448
+- **Findings:** Showed that compute-optimal training ignores inference cost. When inference demand is high, it is cheaper to train a smaller model on more tokens (overtrain) than to train a Chinchilla-optimal model. Trained 47 models showing quality improvement up to 10,000x overtraining with diminishing returns.
+- **Relevance:** Provides the theoretical framework for why industry overtraining ratios far exceed Chinchilla-optimal (10--100x for 7B--14B models, 1--10x for 70B+). These ratios are the empirical baseline for the simulator's χ penalty.
+- **In simulator:** Indirectly. The χ penalty captures the compute inefficiency of overtraining; Sardana et al. explain why labs accept this inefficiency.
+
+**Overtrained Language Models Are Harder to Fine-Tune (Springer et al., 2025)**
+https://arxiv.org/abs/2503.19206
+- **Findings:** Identified "catastrophic overtraining" for OLMo 1B: fine-tuning effectiveness degraded beyond ~2.5T tokens (~1,000x Chinchilla-optimal). Overtrained parameters become brittle and sensitive to post-training perturbation.
+- **Relevance:** Suggests a practical ceiling on useful overtraining even if pre-training loss continues to decrease. Relevant for assessing whether distributed training scenarios at extreme overtraining ratios produce deployable models.
+- **In simulator:** Not directly modeled. The simulator's χ captures pre-training loss inefficiency but does not model post-training fine-tunability.
+
+**Training Open-Weight Models Is Becoming More Data Intensive (Epoch AI, 2025)**
+https://epoch.ai/data-insights/training-tokens-per-parameter/
+- **Findings:** Median tokens-per-active-parameter for open-weight models grew from ~10 in 2022 to ~250--300 in 2025, a compound growth rate of ~3.1x/year.
+- **Relevance:** Documents the industry shift toward deliberate overtraining. Provides empirical context for what overtraining ratios are realistic in distributed training scenarios.
+- **In simulator:** Indirectly. Informs the range of overtraining ratios used in scenario analysis.
+
 ---
 
 ## 2. Large-Scale Training Systems & MFU Benchmarks
