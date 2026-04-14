@@ -2,8 +2,12 @@ import { useState, useEffect } from 'react'
 
 // --- Quality factor helpers (matching evasion_calculator.py) ---
 
-const COMPRESSION_QUALITY: Record<number, number> = {
-  1: 1.00, 4: 1.00, 16: 0.98, 100: 0.95,
+const COMPRESSION_QUALITY_NO_EF: Record<number, number> = {
+  1: 1.00, 4: 1.00, 16: 0.99, 100: 0.98, 150: 0.96, 500: 0.95,
+}
+
+const COMPRESSION_QUALITY_EF: Record<number, number> = {
+  1: 1.00, 4: 1.00, 16: 1.00, 100: 0.99, 150: 0.99, 500: 0.96,
 }
 
 const ACTIVATION_COMPRESSION_QUALITY: Record<number, number> = {
@@ -26,8 +30,9 @@ function interpolateQuality(table: Record<number, number>, ratio: number): numbe
 }
 
 /** Compression quality: penalty from pseudo-gradient compression. */
-function compressionQuality(compressionRatio: number): number {
-  return interpolateQuality(COMPRESSION_QUALITY, compressionRatio)
+function compressionQuality(compressionRatio: number, errorFeedback: boolean = true): number {
+  const table = errorFeedback ? COMPRESSION_QUALITY_EF : COMPRESSION_QUALITY_NO_EF
+  return interpolateQuality(table, compressionRatio)
 }
 
 /** Loss multiplier from averaging multiple replicas' pseudo-gradients.
@@ -166,7 +171,8 @@ function App() {
   const [numNodes, setNumNodes] = useState(72)
   const [pflopsPerNode, setPflopsPerNode] = useState(16) // Sub-CCC node (≤16 H100-equiv)
   const [vramPerNode, setVramPerNode] = useState(2304) // 16x 144GB
-  const [bandwidthMbps, setBandwidthMbps] = useState(100)
+  const [bandwidthUpMbps, setBandwidthUpMbps] = useState(100)
+  const [bandwidthDownMbps, setBandwidthDownMbps] = useState(500)
   const [latencyMs, setLatencyMs] = useState(100) // Inter-node ping
   const [mfu, setMfu] = useState(0.4)
 
@@ -179,7 +185,8 @@ function App() {
 
   // Algorithm Parameters
   const [innerSteps, setInnerSteps] = useState(128)
-  const [compression, setCompression] = useState(16)
+  const [compression, setCompression] = useState(150)
+  const [errorFeedback, setErrorFeedback] = useState(true)
   const [localBatch, setLocalBatch] = useState(131072)
   const [ppCompression, setPpCompression] = useState(10)
   const [microBatches, setMicroBatches] = useState(8)
@@ -202,7 +209,7 @@ function App() {
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue, precision])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthUpMbps, bandwidthDownMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue, precision, errorFeedback])
 
   const calculate = () => {
     // 1. Memory Analysis
@@ -252,7 +259,7 @@ function App() {
     // Strategy: Threshold aggregation is faster but less efficient per token (staleness)
     const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
     const etaH = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
-    const etaCompression = compressionQuality(compression)
+    const etaCompression = compressionQuality(compression, errorFeedback)
     // etaReplicas is computed after mode determination (PP-Group uses numGroups, not effectiveNodes)
     
     // 5. Straggler & Congestion Penalty
@@ -282,7 +289,7 @@ function App() {
         regionalCommSec = ((2 * payloadBits) / (regionalBandwidth * 1e6) + (regionalLatency / 1000)) * getStragglerFactor(nodesPerGroup)
         
         // Global Sync (Every 'totalInnerSteps') - Only leaders communicate
-        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
+        globalCommSec = ((payloadBits / (bandwidthUpMbps * 1e6) + payloadBits / (bandwidthDownMbps * 1e6)) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
         
         // One global cycle = H_global regional cycles
         // Streaming overlaps the sync with the compute block
@@ -299,7 +306,7 @@ function App() {
         computeBlockSec = (innerSteps * regionalSteps) * computeTimePerStep
       } else {
         computeBlockSec = innerSteps * computeTimePerStep
-        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(effectiveNodes)
+        globalCommSec = ((payloadBits / (bandwidthUpMbps * 1e6) + payloadBits / (bandwidthDownMbps * 1e6)) + (latencyMs / 1000)) * getStragglerFactor(effectiveNodes)
         
         const effectiveOuterTime = streamingEnabled
           ? Math.max(computeBlockSec, globalCommSec)
@@ -317,7 +324,7 @@ function App() {
       const activationBits = (localBatch * hiddenDim * bytesPerValue * 8) / ppCompression
 
       // PP intra-group uses regional interconnect if hierarchy enabled, else WAN
-      const ppBandwidth = useHierarchy ? regionalBandwidth : bandwidthMbps
+      const ppBandwidth = useHierarchy ? regionalBandwidth : bandwidthUpMbps
       const ppLatencyMs = useHierarchy ? regionalLatency : latencyMs
 
       const commPerMicroSec = (2 * activationBits / microBatches) / (ppBandwidth * 1e6)
@@ -340,7 +347,7 @@ function App() {
         mode = `PP-Group DiLoCo (${ppStages}×${numGroups})` + (isMoE ? " + MoE" : "")
         const payloadBits = (parameters * bytesPerValue * 8) / compression
         computeBlockSec = innerSteps * ppStepTime
-        globalCommSec = ((2 * payloadBits) / (bandwidthMbps * 1e6) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
+        globalCommSec = ((payloadBits / (bandwidthUpMbps * 1e6) + payloadBits / (bandwidthDownMbps * 1e6)) + (latencyMs / 1000)) * getStragglerFactor(numGroups)
 
         const effectiveOuterTime = streamingEnabled
           ? Math.max(computeBlockSec, globalCommSec)
@@ -544,14 +551,26 @@ function App() {
             <span>Nodes</span>
           </div>
           <div className="input-group">
-            <label>WAN Bandwidth (Mbps): <Tooltip text="Inter-node upload/download speed over the internet." /></label>
-            <input 
-              type="number" 
-              min="1" 
-              max="10000" 
-              step="10" 
-              value={bandwidthMbps} 
-              onChange={(e) => setBandwidthMbps(Number(e.target.value))} 
+            <label>WAN Upload (Mbps): <Tooltip text="Upload bandwidth per node. Typically the bottleneck for pseudo-gradient synchronization." /></label>
+            <input
+              type="number"
+              min="1"
+              max="10000"
+              step="10"
+              value={bandwidthUpMbps}
+              onChange={(e) => setBandwidthUpMbps(Number(e.target.value))}
+            />
+            <span>Mbps</span>
+          </div>
+          <div className="input-group">
+            <label>WAN Download (Mbps): <Tooltip text="Download bandwidth per node. Used for receiving aggregated updates." /></label>
+            <input
+              type="number"
+              min="1"
+              max="10000"
+              step="10"
+              value={bandwidthDownMbps}
+              onChange={(e) => setBandwidthDownMbps(Number(e.target.value))}
             />
             <span>Mbps</span>
           </div>
@@ -731,15 +750,24 @@ function App() {
           </div>
           <div className="input-group">
             <label>Weight Compression: <Tooltip text="Quantization and sparsification factor for weight synchronization." /></label>
-            <input 
-              type="number" 
-              min="1" 
-              max="100" 
-              step="1" 
-              value={compression} 
-              onChange={(e) => setCompression(Number(e.target.value))} 
+            <input
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              value={compression}
+              onChange={(e) => setCompression(Number(e.target.value))}
             />
             <span>x</span>
+          </div>
+          <div className="input-group">
+            <label>Error Feedback: <Tooltip text="SparseLoCo-style error feedback recovers information lost to sparsification, reducing quality loss at high compression ratios. Validated at 146x by Covenant-72B." /></label>
+            <input
+              type="checkbox"
+              checked={errorFeedback}
+              onChange={(e) => setErrorFeedback(e.target.checked)}
+            />
+            <span>Enabled</span>
           </div>
           <div className="input-group">
             <label>Activation Compression: <Tooltip text="Compression factor for inter-node activations in Pipeline Parallel mode." /></label>

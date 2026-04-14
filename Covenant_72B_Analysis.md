@@ -44,27 +44,23 @@ The simulator's central finding — that DiLoCo-style training over commodity in
 
 This is the simulator's most important claim and it holds convincingly.
 
-### 2.2 Streaming/overlapped synchronization works at scale (confirmed)
+### 2.2 Aggressive compression is feasible without major quality loss (confirmed)
 
-The simulator models streaming DiLoCo as `T_outer = max(compute, comm)` rather than `compute + comm`. Covenant confirms this model: by using Cloudflare R2 as an intermediary and overlapping uploads with the compute window, communication overhead is almost fully hidden.
+The simulator's compression quality model (§4.6) originally assigned:
+- 16× compression: 2% expected quality penalty (η = 0.98)
+- 100× compression: 5% expected quality penalty (η = 0.95)
 
-### 2.3 Aggressive compression is feasible without major quality loss (confirmed)
+Covenant achieved **>146× compression** using Top-k sparsification (chunk size 4096, k=64) + 2-bit quantization + error feedback (β=0.95). The resulting model performs competitively with centralized baselines (LLaMA-2-70B, K2-65B) on standard benchmarks. The paper does not report ablations isolating compression effects, but the overall competitive results suggest the quality penalty is within the simulator's "optimistic" range.
 
-The simulator's compression quality model (§4.6) assigned:
-- 16× compression: 2% expected quality penalty
-- 100× compression: 5% expected quality penalty
+Based on these results, the simulator's compression quality table has been updated to 1% expected penalty (η = 0.99) at 16× and 2% expected penalty (η = 0.98) at 100×.
 
-Covenant achieved **>146× compression** using Top-k sparsification (chunk size 4096, k=64) + 2-bit quantization + error feedback (β=0.95). The resulting model performs competitively with centralized baselines (LLaMA-2-70B, K2-65B) on standard benchmarks. The paper does not report ablations isolating compression effects, but the overall competitive results suggest the quality penalty is within the simulator's "expected" to "optimistic" range.
-
-This validates — and arguably exceeds — the simulator's optimistic scenario at 100× compression (η_compression = 0.99).
-
-### 2.4 Straggler handling via threshold aggregation works (confirmed)
+### 2.3 Straggler handling via threshold aggregation works (confirmed)
 
 The simulator models a threshold strategy where the system proceeds with the fastest ~90% of nodes. Covenant implemented exactly this: "slightly more active participants than aggregated contributors" for rapid replacement upon dropout, with an average of 24.4 active submissions per step but only 20 aggregated. This matches the simulator's "backup workers" or threshold strategy.
 
-### 2.5 Hardware utilization in the expected range (confirmed)
+### 2.4 Hardware utilization in the expected range (confirmed)
 
-The simulator assumes 40% MFU as a baseline, noting that INTELLECT-1 achieved 37-43% MFU. While Covenant reports "94.5% compute utilization," this metric measures the fraction of wall time spent computing (vs. waiting for communication) — it is NOT the same as MFU. The actual MFU of each B200 peer is unreported but is implicitly folded into throughput. The ~94.5% figure validates the streaming DiLoCo assumption that communication can be hidden behind compute.
+The simulator assumes 40% MFU as a baseline, noting that INTELLECT-1 achieved 37-43% MFU. While Covenant reports "94.5% compute utilization," this metric measures the fraction of wall time spent computing (vs. waiting for communication) — it is NOT the same as MFU. The actual MFU of each B200 peer is unreported but is implicitly folded into throughput. The ~94.5% figure confirms that communication overhead is small relative to compute time when compression is aggressive.
 
 ---
 
@@ -76,26 +72,26 @@ The simulator assumes 40% MFU as a baseline, noting that INTELLECT-1 achieved 37
 
 **Covenant reality**: >146× achieved with relatively simple techniques (chunk-wise Top-k + 2-bit quantization + error feedback) at 72B scale, producing competitive results.
 
-**Recommended adjustment**: The simulator should update its default compression ratio from 16× to at least 100×, and model 150-200× as the high-end scenario. The compression quality penalty at 100-150× should be revised from the current "expected 5%" to "expected 2-3%," since Covenant demonstrates competitive quality at 146×. The SparseLoCo paper's error-feedback mechanism appears to largely solve the quality degradation that motivated the conservative assumptions.
+**Remaining adjustment**: The default compression ratio should be updated from 16× to at least 100×, and 150-200× modeled as the high-end scenario. The SparseLoCo paper's error-feedback mechanism appears to largely solve the quality degradation that motivated the conservative assumptions. A 150× row should be added to the compression quality table, anchored to Covenant's results. See §5.5 for the proposed table revision.
 
-### 3.2 Inner step count (H) assumptions may need recalibration
+### 3.2 Inner step count (H) — now derived dynamically (updated)
 
-**Simulator assumption**: H=128 as the reference, with the quality penalty modeled as η_H = max(0.4, (1 - α·log₁₀(H))).
+The simulator originally used H=128 as a fixed reference for the 10²⁵ scenario. The simulator now computes H dynamically as `h_min = ⌈T_sync / T_comp⌉` and searches over multiple candidates (including H ∈ {10, 30, 50, 100, 200}) to maximize quality-adjusted compute C_quality.
 
-**Covenant chose**: H=30, which is dramatically lower than the simulator's H=128.
+**Covenant chose**: H=30, which is dramatically lower than the original H=128.
 
 Why did Covenant use H=30 rather than a higher value?
-- Their much higher compression ratio (146×) meant communication time was already very low (~70 seconds), so there was little pressure to increase H further to amortize communication.
-- At H=30, the simulator's α formula gives a very small penalty (~1-2% for a 72B model).
+- Their compression ratio (146×) meant communication time was already very low (~70 seconds), so there was little pressure to increase H further to amortize communication.
+- At H=30, the simulator's α formula gives a modest penalty (~8.6% for a 72B model).
 - The Charles et al. (2025) scaling laws, which the simulator cites, used H=30 as their reference configuration.
 
-**Implication**: The simulator's use of H=128 is conservative for high-compression scenarios. When compression exceeds ~100×, the optimal H shifts much lower (toward 20-50), because the communication time is so small that there's no benefit to additional inner steps, and lower H gives better convergence. The simulator should model H as a function of compression ratio and bandwidth, not as a fixed parameter. At 146× compression over 100 Mbps, the sync time for a 72B model is:
+**Implication**: When compression exceeds ~100×, the optimal H shifts much lower (toward 20-50), because the communication time is so small that there's no benefit to additional inner steps, and lower H gives better convergence. At 146× compression over 100 Mbps, the sync time for a 72B model is:
 
 ```
 72B × 2 bytes × 8 bits/byte / 146 / 100 Mbps ≈ 79 seconds (upload)
 ```
 
-This is close to Covenant's measured 70 seconds, confirming the simulator's communication time model is accurate. But with only 70 seconds of sync time, H=30 with ~20 minutes of compute already gives 94.5% utilization. There is no reason to push H higher.
+This is close to Covenant's measured 70 seconds, confirming the simulator's communication time model is accurate. With only 70 seconds of sync time, H=30 with ~20 minutes of compute already gives 94.5% utilization. There is no reason to push H higher.
 
 ### 3.3 The simulator should model asymmetric bandwidth
 
@@ -111,10 +107,10 @@ instead of `2 × V_bits / BW`.
 
 ### 3.4 The replica count penalty may be less severe than modeled
 
-**Simulator model**: At 20 replicas with a 72B model, the simulator's formula gives:
-- β(72B) = 1.0923 × (72×10⁹)^(-0.2342) ≈ 0.0053
-- L_replicas(20, 72B) = 20^0.0053 ≈ 1.016 (1.6% loss increase)
-- After Chinchilla amplification, this becomes a moderate FLOP penalty.
+**Simulator model**: At 20 replicas with a 72B model at H=30 (= H_ref), the simulator's formula gives:
+- β₀(72B) = 1.0923 × (72×10⁹)^(−0.2342) ≈ 0.0031
+- L_replicas(20, 72B) = 20^0.0031 ≈ 1.0094 (0.94% loss increase)
+- After Chinchilla amplification, this becomes a small FLOP penalty.
 
 **Covenant reality**: With ~17-20 contributing peers (averaged), Covenant-72B achieves:
 - ARC-Challenge: 56.8% (vs. LLaMA-2-70B: 57.4%) — within 0.6pp
@@ -183,17 +179,13 @@ The simulator's 10²⁷ configurations (Part 2 of output) show various configura
 Based on the Covenant-72B results, the following adjustments are recommended:
 
 ### 5.1 Update compression defaults
-- **Default compression ratio**: 16× → 100×
-- **High-end compression ratio**: 100× → 200×
-- **Compression quality at 100×**: "expected" from 0.95 → 0.97
-- **Compression quality at 200×**: new row, "expected" 0.95
+- **Compression quality table**: Updated (see §3.1). 16× expected now 0.99, 100× expected now 0.98.
+- **Default compression ratio**: 16× → 100× (remaining)
+- **High-end compression ratio**: 100× → 200× (remaining)
+- **New 150× row**: Add to compression quality table, anchored to Covenant (remaining; see §5.5)
 
-### 5.2 Model H as a derived parameter
-Instead of fixing H=128, compute H_optimal as:
-```
-H_optimal = max(H_min_for_compute_bound, H_min_for_quality)
-```
-Where H_min_for_quality ≈ 20-50 (based on DiLoCo literature), and H_min_for_compute_bound is the minimum H such that compute time ≥ sync time. Covenant demonstrates that H=30 works well when compression is high enough.
+### 5.2 Model H as a derived parameter (done)
+The simulator now computes `h_min = ⌈T_sync / T_comp⌉` and searches over candidate H values {10, 30, 50, 100, 200, h_min/2, h_min} to maximize quality-adjusted compute. Covenant's use of H=30 at 146× compression validates this approach — at high compression, the search correctly prefers lower H values that reduce staleness penalties.
 
 ### 5.3 Add asymmetric bandwidth support
 Model upload and download bandwidths separately. Use the lower (typically upload) bandwidth for the dominant direction.
@@ -211,10 +203,10 @@ Create a new config file matching Covenant's actual setup for direct comparison:
     "mfu": 0.40
   },
   "algorithm": {
-    "name": "DiLoCo",
+    "name": "SparseLoCo",
     "inner_steps": 30,
     "compression_ratio": 146.0,
-    "streaming": true
+    "streaming": false
   },
   "training": {
     "total_tokens": 1100000000000,
@@ -225,14 +217,14 @@ Create a new config file matching Covenant's actual setup for direct comparison:
 
 ### 5.5 Revise the compression quality table (§4.6)
 
-Current table anchored at experiments up to 15B scale. Covenant provides a new anchor point:
+The compression quality table has been updated once already (16× expected 0.98 → 0.99, 100× expected 0.95 → 0.98). Covenant provides an anchor for further revision — adding a 150× row and tightening conservative bounds:
 
-| Compression Ratio | Old Expected | New Expected (with Covenant anchor) |
-|:--|:--|:--|
-| 16× | 0.98 | 0.98 (unchanged) |
-| 100× | 0.95 | 0.97 |
-| 146× | (not modeled) | 0.96-0.97 |
-| 200× | (not modeled) | 0.95 |
+| Compression Ratio | Current Expected | Proposed Expected | Rationale |
+|:--|:--|:--|:--|
+| 16× | 0.99 | 1.00 | Implicitly validated by 146× working at 72B |
+| 100× | 0.98 | 0.99 | Well below Covenant's 146× with near-lossless quality |
+| 150× | (not modeled) | 0.99 | New row anchored to Covenant-72B |
+| 500× | 0.95 | 0.96 | Uncertainty reduced but still speculative |
 
 ### 5.6 Consider SparseLoCo as a distinct algorithm
 
@@ -245,13 +237,12 @@ The simulator currently models "DiLoCo" as a single algorithm. SparseLoCo (Top-k
 | Aspect | Simulator Prediction | Covenant Reality | Assessment |
 |:--|:--|:--|:--|
 | Compute-bound regime | ✅ Yes | ✅ Yes (94.5% utilization) | **Validated** |
-| Streaming overlap works | ✅ Yes | ✅ Yes | **Validated** |
 | 16× compression feasible | ✅ Yes | Exceeded (146×) | **Validated and exceeded** |
 | Quality competitive with centralized | ✅ At modest penalty | ✅ Competitive with LLaMA-2-70B | **Validated** |
 | Straggler mitigation | ✅ Threshold works | ✅ Dynamic participation | **Validated** |
-| H=128 optimal | ⚠️ Assumed | H=30 used (lower is better when compression is high) | **Needs adjustment** |
+| Compression quality at 100×+ | ⚠️ Originally 5% penalty | Near-lossless at 146× | **Updated** (now 2% at 100×; further revision proposed) |
+| H derived dynamically | ⚠️ Originally fixed at 128 | H=30 used (lower is better at high compression) | **Updated** (now searches over candidates) |
 | 100 Mbps symmetric | ⚠️ Assumed | 110 up / 500 down (asymmetric) | **Needs adjustment** |
-| 100× compression quality = 5% penalty | ⚠️ Assumed | Appears ≤2-3% at 146× | **Too conservative** |
 | Fixed node count | ⚠️ Assumed | Dynamic participation (10-24 active) | **Needs modeling** |
 
-**Bottom line**: Covenant-72B validates the simulator's core thesis — that decentralized training over commodity internet is feasible, compute-bound, and produces competitive models. The main surprise is that compression works even better than the simulator's "expected" case, enabling lower synchronization intervals (H=30) and higher effective efficiency than predicted. The simulator's predictions for larger-scale scenarios (10²⁵-10²⁷ FLOP) are, if anything, conservative in light of these results.
+**Bottom line**: Covenant-72B validates the simulator's core thesis — that decentralized training over commodity internet is feasible, compute-bound, and produces competitive models. The main surprise is that compression works even better than the simulator's "expected" case, enabling lower synchronization intervals (H=30) and higher effective efficiency than predicted. The compression quality table and H derivation have been updated in response; remaining adjustments include adding a 150× compression anchor, asymmetric bandwidth support, and relay-topology straggler modeling. The simulator's predictions for larger-scale scenarios (10²⁵-10²⁷ FLOP) are, if anything, conservative in light of these results.

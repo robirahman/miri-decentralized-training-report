@@ -79,17 +79,20 @@ CONFIGS = {
     },
 }
 
-# Network
-BW_MBPS = 100           # Symmetric WAN bandwidth (Mbps)
-BW_BPS = BW_MBPS * 1e6  # bits/s
-LATENCY_S = 0.1         # 100 ms RTT
+# Network (asymmetric WAN — upload is typically the bottleneck)
+BW_UP_MBPS = 100          # WAN upload bandwidth (Mbps)
+BW_DOWN_MBPS = 500        # WAN download bandwidth (Mbps)
+BW_UP_BPS = BW_UP_MBPS * 1e6    # bits/s
+BW_DOWN_BPS = BW_DOWN_MBPS * 1e6  # bits/s
+LATENCY_S = 0.1           # 100 ms RTT
 
 # Training
 MFU = 0.40
-COMPRESSION = 16        # 4-bit quantization + 25% sparsification
+COMPRESSION = 150       # 4-bit quantization + 25% sparsification
 LOCAL_BATCH = 131_072   # tokens per local step
 BYTES_PER_PARAM = 16    # FP16 mixed-precision training
 BITS_PER_PSEUDO_GRAD = 16  # FP16 pseudo-gradients before compression
+STRAGGLER_MODE = "relay"   # "synchronous", "threshold", or "relay"
 
 # Time
 TIME_YEARS = 1.5
@@ -237,13 +240,26 @@ MEMORY_THRESHOLDS_GB = [256, 512, 1024, 2048]
 # "expected"   = central estimate accounting for remaining extrapolation to 100B+
 # "conservative" = genuinely pessimistic given remaining uncertainty
 
-COMPRESSION_QUALITY = {
+COMPRESSION_QUALITY_NO_EF = {
     1:   {"optimistic": 1.00, "expected": 1.00, "conservative": 1.00},
     4:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.99},
     16:  {"optimistic": 1.00, "expected": 0.99, "conservative": 0.95},
     100: {"optimistic": 1.00, "expected": 0.98, "conservative": 0.90},
+    150: {"optimistic": 0.99, "expected": 0.96, "conservative": 0.85},
     500: {"optimistic": 0.99, "expected": 0.95, "conservative": 0.75},
 }
+
+COMPRESSION_QUALITY_EF = {
+    1:   {"optimistic": 1.00, "expected": 1.00, "conservative": 1.00},
+    4:   {"optimistic": 1.00, "expected": 1.00, "conservative": 0.99},
+    16:  {"optimistic": 1.00, "expected": 1.00, "conservative": 0.97},
+    100: {"optimistic": 1.00, "expected": 0.99, "conservative": 0.93},
+    150: {"optimistic": 1.00, "expected": 0.99, "conservative": 0.91},
+    500: {"optimistic": 0.99, "expected": 0.96, "conservative": 0.80},
+}
+
+ERROR_FEEDBACK = True
+COMPRESSION_QUALITY = COMPRESSION_QUALITY_EF  # backward-compat alias
 
 DEFAULT_SCENARIO = "expected"
 
@@ -270,10 +286,22 @@ LEGITIMATE_SYSTEMS = [
 
 # ── Simulator formulas ────────────────────────────────────────────────────────
 
-def straggler_factor(n):
-    """f(n) = 1 + 0.05 * log2(n)"""
+def straggler_factor(n, mode=None):
+    """Straggler penalty factor for synchronous aggregation.
+    Modes:
+      "synchronous" — full penalty: f(n) = 1 + 0.05 * log2(n)
+      "threshold"   — stragglers dropped: f(n) = 1.0
+      "relay"       — async relay (e.g. R2): f(n) = 1 + 0.02 * log2(n)
+    """
+    if mode is None:
+        mode = STRAGGLER_MODE
     if n <= 1:
         return 1.0
+    if mode == "threshold":
+        return 1.0
+    if mode == "relay":
+        return 1.0 + 0.02 * math.log2(n)
+    # "synchronous" (default/legacy)
     return 1.0 + 0.05 * math.log2(n)
 
 
@@ -304,9 +332,12 @@ def _interpolate_quality(table, ratio, scenario=None):
     return table[thresholds[-1]][scenario]
 
 
-def compression_quality(compression_ratio, scenario=None):
+def compression_quality(compression_ratio, scenario=None, error_feedback=None):
     """Multiplicative quality factor for pseudo-gradient compression."""
-    return _interpolate_quality(COMPRESSION_QUALITY, compression_ratio, scenario)
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
+    table = COMPRESSION_QUALITY_EF if error_feedback else COMPRESSION_QUALITY_NO_EF
+    return _interpolate_quality(table, compression_ratio, scenario)
 
 
 # ── Activation compression quality model ─────────────────────────────────────
@@ -419,25 +450,27 @@ def chinchilla_efficiency(params, tokens, c_flop, loss_multiplier=1.0,
     return min(1.0, c_effective / c_flop)
 
 
-def efficiency(h, params_billion, compression_ratio=1, scenario=None):
+def efficiency(h, params_billion, compression_ratio=1, scenario=None, error_feedback=None):
     """Throughput efficiency: eta_H * eta_compression.
     eta_H = max(0.4, 1 - alpha * log10(H))  [sync interval penalty]
     eta_compression = compression_quality()   [gradient compression quality]
+    error_feedback: if True, use error-feedback compression table (higher quality).
     Note: replica penalty (eta_replica) is computed separately in each
     compute_*_scenario() function via Chinchilla decomposition and folded
     into the returned eta."""
     a = alpha(params_billion)
     eta_h = 1.0 - a * math.log10(h)
     eta_h = max(0.4, eta_h)
-    eta_c = compression_quality(compression_ratio, scenario)
+    eta_c = compression_quality(compression_ratio, scenario, error_feedback=error_feedback)
     return eta_h * eta_c
 
 
 def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                      time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                      bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                     bw_bps=None, latency_s=None, scenario=None,
-                     target_params_b=None, h_override=None):
+                     bw_up_bps=None, bw_down_bps=None, latency_s=None,
+                     scenario=None, target_params_b=None, h_override=None,
+                     straggler_mode=None, error_feedback=None):
     """Compute all metrics for a given node configuration and node count.
     If target_params_b is specified, train that model size instead of max-VRAM.
     If h_override is specified, use that H instead of h_min (may be comm-bound).
@@ -452,10 +485,16 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     if latency_s is None:
         latency_s = LATENCY_S
+    if straggler_mode is None:
+        straggler_mode = STRAGGLER_MODE
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -479,11 +518,11 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     # Communication volume per sync (bits, after compression)
     v_bits = params * bits_per_pseudo_grad / compression
 
-    # Sync time (base, before straggler)
-    t_sync_base = 2 * v_bits / bw_bps + latency_s
+    # Sync time (base, before straggler): upload + download + latency
+    t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
 
     # Straggler factor
-    f_n = straggler_factor(n_nodes)
+    f_n = straggler_factor(n_nodes, mode=straggler_mode)
 
     # Sync time with straggler
     t_sync = t_sync_base * f_n
@@ -497,7 +536,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         h_min = math.ceil(t_sync / t_comp)
         h_used = h_override if h_override is not None else h_min
         eta = efficiency(h_used, params_b, compression_ratio=compression,
-                         scenario=scenario)
+                         scenario=scenario, error_feedback=error_feedback)
 
     # Throughput: accounts for comm-bound at low H
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
@@ -564,7 +603,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
         "strict_threshold_multiple": c_local / 1e24,
         "compression": compression,
         "time_seconds": time_seconds,
-        "bw_mbps": bw_bps / 1e6,
+        "bw_up_mbps": bw_up_bps / 1e6,
+        "bw_down_mbps": bw_down_bps / 1e6,
         "latency_ms": latency_s * 1000,
         "bw_duty_cycle": bw_duty_cycle,
         "comm_gb_per_sync": comm_gb_per_sync,
@@ -575,9 +615,10 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
                                   compression=COMPRESSION, time_seconds=None,
                                   bytes_per_param=BYTES_PER_PARAM,
                                   bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                                  bw_bps=None, latency_s=None,
+                                  bw_up_bps=None, bw_down_bps=None, latency_s=None,
                                   regional_bw_bps=None, regional_latency_s=None,
-                                  scenario=None, cfg=None, target_params_b=None):
+                                  scenario=None, cfg=None, target_params_b=None,
+                                  straggler_mode=None, error_feedback=None):
     """Compute metrics for hierarchical DiLoCo (two-tier topology).
     If cfg is provided, use it directly instead of looking up config_name.
     If target_params_b is specified, train that model size instead of max-VRAM.
@@ -598,14 +639,20 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     if latency_s is None:
         latency_s = LATENCY_S
     if regional_bw_bps is None:
         regional_bw_bps = REGIONAL_BW_BPS
     if regional_latency_s is None:
         regional_latency_s = REGIONAL_LATENCY_S
+    if straggler_mode is None:
+        straggler_mode = STRAGGLER_MODE
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -630,17 +677,20 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
         # Fall back to flat DiLoCo
         return compute_generic_scenario(cfg, n_nodes, compression, time_seconds,
                                         bytes_per_param, bits_per_pseudo_grad,
-                                        bw_bps, latency_s, scenario=scenario,
-                                        target_params_b=target_params_b)
+                                        bw_up_bps=bw_up_bps, bw_down_bps=bw_down_bps,
+                                        latency_s=latency_s, scenario=scenario,
+                                        target_params_b=target_params_b,
+                                        straggler_mode=straggler_mode,
+                                        error_feedback=error_feedback)
 
     # Regional sync (fast LAN)
-    f_regional = straggler_factor(nodes_per_group)
+    f_regional = straggler_factor(nodes_per_group, mode=straggler_mode)
     t_regional_sync = (2 * v_bits / regional_bw_bps + regional_latency_s) * f_regional
     h_inner_min = max(1, math.ceil(t_regional_sync / t_comp))
 
     # Global sync (slow WAN)
-    f_global = straggler_factor(n_groups)
-    t_global_sync = (2 * v_bits / bw_bps + latency_s) * f_global
+    f_global = straggler_factor(n_groups, mode=straggler_mode)
+    t_global_sync = (v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s) * f_global
 
     # Regional cycle time (streaming)
     t_regional_cycle = max(h_inner_min * t_comp, t_regional_sync)
@@ -652,7 +702,7 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     h_eff = h_inner_min * math.sqrt(h_regional_min)
 
     eta = efficiency(h_eff, params_b, compression_ratio=compression,
-                     scenario=scenario)
+                     scenario=scenario, error_feedback=error_feedback)
 
     # Total local-equivalent FLOPs
     c_actual = n_nodes * effective_flops * time_seconds
@@ -718,7 +768,8 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
 def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_b,
                             n_moe_layers=32, compression=COMPRESSION,
-                            time_seconds=None, scenario=None):
+                            time_seconds=None, scenario=None,
+                            straggler_mode=None, error_feedback=None):
     """Compute metrics for MoE + Expert Parallelism scenario."""
     if config_name in CONFIGS:
         cfg = CONFIGS[config_name]
@@ -731,6 +782,10 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
+    if straggler_mode is None:
+        straggler_mode = STRAGGLER_MODE
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -755,8 +810,8 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     v_bits = total_params_b * 1e9 * bpg / compression
 
     # Sync time
-    f_n = straggler_factor(n_nodes)
-    t_sync_base = 2 * v_bits / BW_BPS + LATENCY_S
+    f_n = straggler_factor(n_nodes, mode=straggler_mode)
+    t_sync_base = v_bits / BW_UP_BPS + v_bits / BW_DOWN_BPS + LATENCY_S
     t_sync = t_sync_base * f_n
 
     # Minimum H
@@ -767,7 +822,7 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     else:
         h_min = math.ceil(t_sync / t_step)
         eta = efficiency(h_min, total_params_b, compression_ratio=compression,
-                         scenario=scenario)
+                         scenario=scenario, error_feedback=error_feedback)
 
     # Total local-equivalent FLOPs (based on active params compute rate)
     # Adjust for EP latency overhead
@@ -838,9 +893,10 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
                                 compression=COMPRESSION,
                                 bytes_per_param=BYTES_PER_PARAM,
                                 bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                                time_seconds=None, bw_bps=None, latency_s=None,
-                                pp_bw_bps=None, pp_latency_s=None,
-                                scenario=None, cfg=None):
+                                time_seconds=None, bw_up_bps=None, bw_down_bps=None,
+                                latency_s=None, pp_bw_bps=None, pp_latency_s=None,
+                                scenario=None, cfg=None,
+                                straggler_mode=None, error_feedback=None):
     """PP-Group DiLoCo: pipeline parallelism within co-located groups,
     DiLoCo synchronization across groups over WAN.
 
@@ -866,14 +922,20 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     if latency_s is None:
         latency_s = LATENCY_S
     if pp_bw_bps is None:
         pp_bw_bps = PP_BW_BPS
     if pp_latency_s is None:
         pp_latency_s = PP_LATENCY_S
+    if straggler_mode is None:
+        straggler_mode = STRAGGLER_MODE
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -914,15 +976,15 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     comm_per_micro = (2 * activation_bits / micro_batches) / pp_bw_bps
 
     # GPipe bubble formula: (M + S - 1) micro-steps
-    pp_straggler = straggler_factor(pp_stages)
+    pp_straggler = straggler_factor(pp_stages, mode=straggler_mode)
     pp_step_time = (micro_batches + pp_stages - 1) * (
         compute_per_micro + (comm_per_micro + pp_latency_s) * pp_straggler
     )
 
     # DiLoCo sync across groups (pseudo-gradients over WAN)
     v_bits = params * bits_per_pseudo_grad / compression
-    f_n = straggler_factor(n_groups)
-    t_sync_base = 2 * v_bits / bw_bps + latency_s
+    f_n = straggler_factor(n_groups, mode=straggler_mode)
+    t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
     t_sync = t_sync_base * f_n
 
     # Minimum H (inner steps before DiLoCo sync)
@@ -930,7 +992,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
 
     # Efficiency components (throughput only; replica penalty via Chinchilla)
     eta_h_c_r = efficiency(h_min, target_params_b, compression_ratio=compression,
-                           scenario=scenario)
+                           scenario=scenario, error_feedback=error_feedback)
     eta_act = activation_compression_quality(pp_compression, pp_stages, scenario)
     eta = eta_h_c_r * eta_act
 
@@ -1000,7 +1062,8 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
 # ── Model size sweep ──────────────────────────────────────────────────────────
 
 def sweep_model_sizes(config_name, n_nodes, compression=COMPRESSION,
-                      scenario=None, time_seconds=None):
+                      scenario=None, time_seconds=None,
+                      straggler_mode=None, error_feedback=None):
     """Evaluate multiple model sizes and return all results.
     Includes DiLoCo candidates (fit on one node) and PP-DiLoCo candidates
     (require pipeline parallelism). Returns list of result dicts sorted by
@@ -1021,7 +1084,9 @@ def sweep_model_sizes(config_name, n_nodes, compression=COMPRESSION,
         try:
             r = compute_scenario(config_name, n_nodes, compression=compression,
                                  scenario=scenario, time_seconds=time_seconds,
-                                 target_params_b=target)
+                                 target_params_b=target,
+                                 straggler_mode=straggler_mode,
+                                 error_feedback=error_feedback)
             r["mode_type"] = "DiLoCo"
             r["pp_stages"] = 1
             r["n_groups"] = n_nodes
@@ -1038,7 +1103,9 @@ def sweep_model_sizes(config_name, n_nodes, compression=COMPRESSION,
                                         target_params_b=target,
                                         compression=compression,
                                         scenario=scenario,
-                                        time_seconds=time_seconds)
+                                        time_seconds=time_seconds,
+                                        straggler_mode=straggler_mode,
+                                        error_feedback=error_feedback)
         if r:
             r["mode_type"] = "PP-DiLoCo"
             results.append(r)
@@ -1294,43 +1361,61 @@ DEPLOYMENT_PROFILES = {
 
 
 def bandwidth_sensitivity(config_name, n_nodes, compression=COMPRESSION,
-                          latency_s=None, use_hierarchical=False, scenario=None):
+                          latency_s=None, use_hierarchical=False, scenario=None,
+                          straggler_mode=None, error_feedback=None):
     """Sweep bandwidth values and return results for each."""
     if latency_s is None:
         latency_s = LATENCY_S
     results = []
     for bw_mbps in BANDWIDTH_SWEEP_MBPS:
-        bw_bps = bw_mbps * 1e6
+        bw_bps = bw_mbps * 1e6  # symmetric for sweep
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=latency_s,
-                                              scenario=scenario)
+                                              bw_up_bps=bw_bps, bw_down_bps=bw_bps,
+                                              latency_s=latency_s,
+                                              scenario=scenario,
+                                              straggler_mode=straggler_mode,
+                                              error_feedback=error_feedback)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=latency_s,
-                                 scenario=scenario)
+                                 bw_up_bps=bw_bps, bw_down_bps=bw_bps,
+                                 latency_s=latency_s,
+                                 scenario=scenario,
+                                 straggler_mode=straggler_mode,
+                                 error_feedback=error_feedback)
         r["bw_mbps"] = bw_mbps
         results.append(r)
     return results
 
 
 def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
-                        bw_bps=None, use_hierarchical=False, scenario=None):
+                        bw_up_bps=None, bw_down_bps=None,
+                        use_hierarchical=False, scenario=None,
+                        straggler_mode=None, error_feedback=None):
     """Sweep latency values and return results for each."""
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     results = []
     for name, lat_s in LATENCY_SCENARIOS.items():
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=lat_s,
-                                              scenario=scenario)
+                                              bw_up_bps=bw_up_bps,
+                                              bw_down_bps=bw_down_bps,
+                                              latency_s=lat_s,
+                                              scenario=scenario,
+                                              straggler_mode=straggler_mode,
+                                              error_feedback=error_feedback)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=lat_s,
-                                 scenario=scenario)
+                                 bw_up_bps=bw_up_bps, bw_down_bps=bw_down_bps,
+                                 latency_s=lat_s,
+                                 scenario=scenario,
+                                 straggler_mode=straggler_mode,
+                                 error_feedback=error_feedback)
         r["latency_scenario"] = name
         r["latency_ms"] = lat_s * 1000
         results.append(r)
@@ -1338,21 +1423,27 @@ def latency_sensitivity(config_name, n_nodes, compression=COMPRESSION,
 
 
 def deployment_profile_sweep(config_name, n_nodes, compression=COMPRESSION,
-                             use_hierarchical=False, scenario=None):
+                             use_hierarchical=False, scenario=None,
+                             straggler_mode=None, error_feedback=None):
     """Test all deployment profiles and return results."""
     results = []
     for name, profile in DEPLOYMENT_PROFILES.items():
-        bw_bps = profile["bw_mbps"] * 1e6
+        bw_bps = profile["bw_mbps"] * 1e6  # symmetric for profiles
         lat_s = profile["latency_ms"] / 1000.0
         if use_hierarchical:
             r = compute_hierarchical_scenario(config_name, n_nodes,
                                               compression=compression,
-                                              bw_bps=bw_bps, latency_s=lat_s,
-                                              scenario=scenario)
+                                              bw_up_bps=bw_bps, bw_down_bps=bw_bps,
+                                              latency_s=lat_s,
+                                              scenario=scenario,
+                                              straggler_mode=straggler_mode,
+                                              error_feedback=error_feedback)
         else:
             r = compute_scenario(config_name, n_nodes, compression=compression,
-                                 bw_bps=bw_bps, latency_s=lat_s,
-                                 scenario=scenario)
+                                 bw_up_bps=bw_bps, bw_down_bps=bw_bps,
+                                 latency_s=lat_s, scenario=scenario,
+                                 straggler_mode=straggler_mode,
+                                 error_feedback=error_feedback)
         r["profile"] = name
         r["profile_description"] = profile["description"]
         r["bw_mbps"] = profile["bw_mbps"]
@@ -1422,8 +1513,9 @@ def print_deployment_profiles(config_name, n_nodes, compression=COMPRESSION,
 def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
                              time_seconds=None, bytes_per_param=BYTES_PER_PARAM,
                              bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                             bw_bps=None, latency_s=None, scenario=None,
-                             target_params_b=None, h_override=None):
+                             bw_up_bps=None, bw_down_bps=None, latency_s=None,
+                             scenario=None, target_params_b=None, h_override=None,
+                             straggler_mode=None, error_feedback=None):
     """Compute scenario for an arbitrary config dict (not from named configs).
     If target_params_b is specified, train that model size instead of max-VRAM.
     If h_override is specified, use that H instead of h_min (may be comm-bound).
@@ -1435,10 +1527,16 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
     if time_seconds is None:
         time_seconds = TIME_SECONDS
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     if latency_s is None:
         latency_s = LATENCY_S
+    if straggler_mode is None:
+        straggler_mode = STRAGGLER_MODE
+    if error_feedback is None:
+        error_feedback = ERROR_FEEDBACK
 
     pflops = cfg["pflops"]
     vram_gb = cfg["vram_gb"]
@@ -1452,8 +1550,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     effective_flops = pflops * 1e15 * MFU
     t_comp = (6 * params * LOCAL_BATCH) / effective_flops
     v_bits = params * bits_per_pseudo_grad / compression
-    t_sync_base = 2 * v_bits / bw_bps + latency_s
-    f_n = straggler_factor(n_nodes)
+    t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
+    f_n = straggler_factor(n_nodes, mode=straggler_mode)
     t_sync = t_sync_base * f_n
 
     if n_nodes == 1:
@@ -1464,7 +1562,7 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
         h_min = math.ceil(t_sync / t_comp)
         h_used = h_override if h_override is not None else h_min
         eta = efficiency(h_used, params_b, compression_ratio=compression,
-                         scenario=scenario)
+                         scenario=scenario, error_feedback=error_feedback)
 
     # Throughput: accounts for comm-bound at low H
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
@@ -1522,7 +1620,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
 def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
                           bytes_per_param=BYTES_PER_PARAM,
-                          bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD):
+                          bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
+                          straggler_mode=None, error_feedback=None):
     """Binary search for minimum nodes to reach target_flop."""
     if "bytes_per_param" in cfg:
         bytes_per_param = cfg["bytes_per_param"]
@@ -1532,7 +1631,9 @@ def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
     # Check if 1 node suffices
     r = compute_generic_scenario(cfg, 1, compression=compression,
                                  bytes_per_param=bytes_per_param,
-                                 bits_per_pseudo_grad=bits_per_pseudo_grad)
+                                 bits_per_pseudo_grad=bits_per_pseudo_grad,
+                                 straggler_mode=straggler_mode,
+                                 error_feedback=error_feedback)
     if r["c_local"] >= target_flop:
         return r
 
@@ -1542,7 +1643,9 @@ def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
         mid = (lo + hi) // 2
         r = compute_generic_scenario(cfg, mid, compression=compression,
                                      bytes_per_param=bytes_per_param,
-                                     bits_per_pseudo_grad=bits_per_pseudo_grad)
+                                     bits_per_pseudo_grad=bits_per_pseudo_grad,
+                                     straggler_mode=straggler_mode,
+                                     error_feedback=error_feedback)
         if r["c_local"] >= target_flop:
             hi = mid
         else:
@@ -1550,7 +1653,9 @@ def find_nodes_for_target(cfg, target_flop, compression=COMPRESSION,
 
     return compute_generic_scenario(cfg, lo, compression=compression,
                                     bytes_per_param=bytes_per_param,
-                                    bits_per_pseudo_grad=bits_per_pseudo_grad)
+                                    bits_per_pseudo_grad=bits_per_pseudo_grad,
+                                    straggler_mode=straggler_mode,
+                                    error_feedback=error_feedback)
 
 
 def _h_candidates(h_min):
@@ -1634,7 +1739,9 @@ def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=1
 def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSION,
                                    bytes_per_param=BYTES_PER_PARAM,
                                    bits_per_pseudo_grad=BITS_PER_PSEUDO_GRAD,
-                                   bw_bps=None, latency_s=None, scenario=None):
+                                   bw_up_bps=None, bw_down_bps=None,
+                                   latency_s=None, scenario=None,
+                                   straggler_mode=None, error_feedback=None):
     """Search over flat DiLoCo, hierarchical DiLoCo, and PP-Group DiLoCo at
     various model sizes to find the minimum-cost configuration reaching
     target_c_quality. All connections use the same bandwidth (WAN scenario).
@@ -1644,8 +1751,10 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
         bytes_per_param = cfg["bytes_per_param"]
     if "bits_per_pseudo_grad" in cfg:
         bits_per_pseudo_grad = cfg["bits_per_pseudo_grad"]
-    if bw_bps is None:
-        bw_bps = BW_BPS
+    if bw_up_bps is None:
+        bw_up_bps = BW_UP_BPS
+    if bw_down_bps is None:
+        bw_down_bps = BW_DOWN_BPS
     if latency_s is None:
         latency_s = LATENCY_S
 
@@ -1666,9 +1775,11 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
         def flat_fn(n, pb=params_b, h_override=None):
             return compute_generic_scenario(
                 cfg, n, compression=compression, bytes_per_param=bytes_per_param,
-                bits_per_pseudo_grad=bits_per_pseudo_grad, bw_bps=bw_bps,
+                bits_per_pseudo_grad=bits_per_pseudo_grad,
+                bw_up_bps=bw_up_bps, bw_down_bps=bw_down_bps,
                 latency_s=latency_s, scenario=scenario, target_params_b=pb,
-                h_override=h_override)
+                h_override=h_override,
+                straggler_mode=straggler_mode, error_feedback=error_feedback)
 
         update_best(_binary_search_nodes_for_c_quality(
             flat_fn, target_c_quality, search_h=True))
@@ -1686,9 +1797,11 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
                     None, n, nodes_per_group=npg, compression=compression,
                     bytes_per_param=bytes_per_param,
                     bits_per_pseudo_grad=bits_per_pseudo_grad,
-                    bw_bps=bw_bps, latency_s=latency_s,
-                    regional_bw_bps=bw_bps, regional_latency_s=latency_s,
-                    scenario=scenario, cfg=cfg, target_params_b=pb)
+                    bw_up_bps=bw_up_bps, bw_down_bps=bw_down_bps,
+                    latency_s=latency_s,
+                    regional_bw_bps=bw_up_bps, regional_latency_s=latency_s,
+                    scenario=scenario, cfg=cfg, target_params_b=pb,
+                    straggler_mode=straggler_mode, error_feedback=error_feedback)
 
             update_best(_binary_search_nodes_for_c_quality(hier_fn, target_c_quality))
 
@@ -1706,9 +1819,11 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
                     compression=compression,
                     bytes_per_param=bytes_per_param,
                     bits_per_pseudo_grad=bits_per_pseudo_grad,
-                    bw_bps=bw_bps, latency_s=latency_s,
-                    pp_bw_bps=bw_bps, pp_latency_s=latency_s,
-                    scenario=scenario, cfg=cfg)
+                    bw_up_bps=bw_up_bps, bw_down_bps=bw_down_bps,
+                    latency_s=latency_s,
+                    pp_bw_bps=bw_up_bps, pp_latency_s=latency_s,
+                    scenario=scenario, cfg=cfg,
+                    straggler_mode=straggler_mode, error_feedback=error_feedback)
 
             update_best(_binary_search_nodes_for_c_quality(pp_fn, target_c_quality))
 
@@ -2021,8 +2136,8 @@ if __name__ == "__main__":
     print("=" * 80)
     print("TREATY EVASION SCENARIO: Maximum Distributed Training Below CCC Threshold")
     print(f"Time limit: {TIME_YEARS} years ({TIME_SECONDS/86400:.0f} days)")
-    print(f"WAN: {BW_MBPS} Mbps, {LATENCY_S*1000:.0f} ms latency")
-    print(f"MFU: {MFU*100:.0f}%  |  Compression: {COMPRESSION}x  |  Streaming: Yes")
+    print(f"WAN: {BW_UP_MBPS} Mbps up / {BW_DOWN_MBPS} Mbps down, {LATENCY_S*1000:.0f} ms latency")
+    print(f"MFU: {MFU*100:.0f}%  |  Compression: {COMPRESSION}x  |  Error feedback: {'Yes' if ERROR_FEEDBACK else 'No'}  |  Streaming: Yes  |  Straggler: {STRAGGLER_MODE}")
     print(f"Compression quality scenario: {DEFAULT_SCENARIO}")
     print(f"CCC threshold: 16 H100-equivalents = 15,840 TFLOPS FP16")
     print("=" * 80)
@@ -2271,8 +2386,14 @@ if __name__ == "__main__":
     print("PART 7: COMPRESSION QUALITY SENSITIVITY")
     print("=" * 80)
     print(f"\nDefault scenario: {DEFAULT_SCENARIO}")
-    print("Compression quality factors (multiplicative on eta):")
-    for cr, factors in sorted(COMPRESSION_QUALITY.items()):
+    print(f"Error feedback: {'Yes' if ERROR_FEEDBACK else 'No'}")
+    print("\nCompression quality (with error feedback):")
+    for cr, factors in sorted(COMPRESSION_QUALITY_EF.items()):
+        print(f"  {cr:>4}x: optimistic={factors['optimistic']:.2f}, "
+              f"expected={factors['expected']:.2f}, "
+              f"conservative={factors['conservative']:.2f}")
+    print("\nCompression quality (without error feedback):")
+    for cr, factors in sorted(COMPRESSION_QUALITY_NO_EF.items()):
         print(f"  {cr:>4}x: optimistic={factors['optimistic']:.2f}, "
               f"expected={factors['expected']:.2f}, "
               f"conservative={factors['conservative']:.2f}")
