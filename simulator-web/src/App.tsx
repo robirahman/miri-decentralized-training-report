@@ -86,23 +86,37 @@ function chinchillaEfficiency(params: number, tokens: number, cFlop: number,
   return Math.min(1.0, cEffective / cFlop)
 }
 
-// Hardware presets: max sub-CCC node for each chip type (≤16 H100-equivalents FP16)
+// Hardware presets. Sub-CCC rows are the max node under the 16 H100-equiv FP16 threshold.
+// Pod/rack rows are standard manufacturer-defined scale-up units (NVLink/ICI/UB domains or
+// named reference architectures like DGX SuperPOD).
 const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; label: string; group: string }> = {
   'custom':       { pflops: 16,    vram: 2304, label: 'Custom',               group: '' },
-  // NVIDIA
-  '50xA100':      { pflops: 15.60, vram: 4000, label: '50x A100 80GB',        group: 'NVIDIA' },
-  '16xH100':      { pflops: 15.84, vram: 1280, label: '16x H100 SXM',         group: 'NVIDIA' },
-  '16xGH200':     { pflops: 15.84, vram: 2304, label: '16x GH200',            group: 'NVIDIA' },
-  '9xB100':       { pflops: 15.75, vram: 1728, label: '9x B100',              group: 'NVIDIA' },
-  '7xB200':       { pflops: 15.75, vram: 1344, label: '7x B200',              group: 'NVIDIA' },
-  // Chinese chips
-  '49xAscend910B':{ pflops: 15.68, vram: 3136, label: '49x Ascend 910B',      group: 'Chinese' },
-  '26xAscend910C':{ pflops: 15.60, vram: 3328, label: '26x Ascend 910C',      group: 'Chinese' },
+  // NVIDIA sub-CCC nodes
+  '50xA100':      { pflops: 15.60, vram: 4000, label: '50x A100 80GB',        group: 'NVIDIA (sub-CCC)' },
+  '16xH100':      { pflops: 15.84, vram: 1280, label: '16x H100 SXM',         group: 'NVIDIA (sub-CCC)' },
+  '16xGH200':     { pflops: 15.84, vram: 2304, label: '16x GH200',            group: 'NVIDIA (sub-CCC)' },
+  '9xB100':       { pflops: 15.75, vram: 1728, label: '9x B100',              group: 'NVIDIA (sub-CCC)' },
+  '7xB200':       { pflops: 15.75, vram: 1344, label: '7x B200',              group: 'NVIDIA (sub-CCC)' },
+  // NVIDIA pods / scale-up racks
+  'NVL32_GH200':  { pflops: 31.68,   vram: 4608,   label: 'GH200 NVL32 (32x GH200)',              group: 'NVIDIA (pods)' },
+  'NVL72_B200':   { pflops: 162.0,   vram: 13824,  label: 'GB200 NVL72 (72x B200)',               group: 'NVIDIA (pods)' },
+  'H100_SuperPOD':{ pflops: 253.44,  vram: 20480,  label: 'DGX H100 SuperPOD (32 DGX, 256x H100)', group: 'NVIDIA (pods)' },
+  'A100_SuperPOD':{ pflops: 349.44,  vram: 89600,  label: 'DGX A100 SuperPOD (140 DGX, 1120x A100 80GB)', group: 'NVIDIA (pods)' },
+  // Chinese sub-CCC nodes
+  '49xAscend910B':{ pflops: 15.68, vram: 3136, label: '49x Ascend 910B',      group: 'Chinese (sub-CCC)' },
+  '26xAscend910C':{ pflops: 15.60, vram: 3328, label: '26x Ascend 910C',      group: 'Chinese (sub-CCC)' },
+  // Chinese pods
+  'CM384':        { pflops: 230.4,   vram: 49152,  label: 'CloudMatrix 384 (384x Ascend 910C)',   group: 'Chinese (pods)' },
   // Google TPUs (BF16 TFLOPS as FP16-equivalent)
-  '57xTPUv4':     { pflops: 15.68, vram: 1824, label: '57x TPU v4',           group: 'Google TPU' },
-  '80xTPUv5e':    { pflops: 15.76, vram: 1280, label: '80x TPU v5e',          group: 'Google TPU' },
-  '34xTPUv5p':    { pflops: 15.61, vram: 3230, label: '34x TPU v5p',          group: 'Google TPU' },
-  '17xTPUv6e':    { pflops: 15.61, vram: 544,  label: '17x TPU v6e',          group: 'Google TPU' },
+  '57xTPUv4':     { pflops: 15.68, vram: 1824, label: '57x TPU v4',           group: 'Google TPU (sub-CCC)' },
+  '80xTPUv5e':    { pflops: 15.76, vram: 1280, label: '80x TPU v5e',          group: 'Google TPU (sub-CCC)' },
+  '34xTPUv5p':    { pflops: 15.61, vram: 3230, label: '34x TPU v5p',          group: 'Google TPU (sub-CCC)' },
+  '17xTPUv6e':    { pflops: 15.61, vram: 544,  label: '17x TPU v6e',          group: 'Google TPU (sub-CCC)' },
+  // Google TPU pods (single-ICI scale-up)
+  'PodTPUv4':     { pflops: 1126.4,  vram: 131072, label: 'TPU v4 pod (4,096 chips)',              group: 'Google TPU (pods)' },
+  'PodTPUv5e':    { pflops: 50.43,   vram: 4096,   label: 'TPU v5e pod (256 chips)',               group: 'Google TPU (pods)' },
+  'PodTPUv5p':    { pflops: 4112.64, vram: 851200, label: 'TPU v5p pod (8,960 chips)',             group: 'Google TPU (pods)' },
+  'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
 }
 
 const Tooltip = ({ text }: { text: string }) => (
@@ -587,7 +601,7 @@ function App() {
             <span>ms</span>
           </div>
           <div className="input-group">
-            <label>Hardware Preset: <Tooltip text="Select a pre-configured sub-CCC node (max accelerators under 16 H100-equiv compute threshold). Selecting a preset sets VRAM and PFLOPS automatically." /></label>
+            <label>Hardware Preset: <Tooltip text="Select a node type. Sub-CCC groups are the max accelerators under the 16 H100-equiv FP16 compute threshold. Pod groups are standard manufacturer-offered scale-up units (NVLink/ICI/UB domains, DGX SuperPOD, TPU pod, CloudMatrix). Selecting a preset sets VRAM and PFLOPS automatically." /></label>
             <select
               value={hwPreset}
               onChange={(e) => {
@@ -602,12 +616,12 @@ function App() {
               style={{ background: '#2a2a2a', color: '#e2e8f0', border: '1px solid #475569', padding: '6px 10px', borderRadius: '6px', fontSize: '0.9em' }}
             >
               <option value="custom">Custom</option>
-              {['NVIDIA', 'Chinese', 'Google TPU'].map(group => (
+              {['NVIDIA (sub-CCC)', 'NVIDIA (pods)', 'Chinese (sub-CCC)', 'Chinese (pods)', 'Google TPU (sub-CCC)', 'Google TPU (pods)'].map(group => (
                 <optgroup key={group} label={group}>
                   {Object.entries(HARDWARE_PRESETS)
                     .filter(([, v]) => v.group === group)
                     .map(([k, v]) => (
-                      <option key={k} value={k}>{v.label} ({v.vram} GB, {v.pflops} PFLOPS)</option>
+                      <option key={k} value={k}>{v.label} ({v.vram.toLocaleString()} GB, {v.pflops} PFLOPS)</option>
                     ))}
                 </optgroup>
               ))}
@@ -618,7 +632,7 @@ function App() {
             <input
               type="number"
               min="8"
-              max="5000"
+              max="1000000"
               step="8"
               value={vramPerNode}
               onChange={(e) => { setVramPerNode(Number(e.target.value)); setHwPreset('custom') }}
@@ -630,7 +644,7 @@ function App() {
             <input
               type="number"
               min="1"
-              max="1000"
+              max="10000"
               step="1"
               value={pflopsPerNode}
               onChange={(e) => { setPflopsPerNode(Number(e.target.value)); setHwPreset('custom') }}
@@ -800,10 +814,10 @@ function App() {
             <h3 style={{ margin: 0 }}>Maximum Training Duration {showMaxDuration ? '▼' : '▶'}</h3>
           </div>
           <p style={{ fontSize: '0.8em', color: '#64748b', marginTop: '4px' }}>
-            Based on Epoch's{' '}
+            Based on the training time model in{' '}
             <a href="https://epoch.ai/blog/the-longest-training-run" target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8' }}>The Longest Training Run</a>.
-            See their{' '}
-            <a href="https://epoch.ai/data/trends" target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8' }}>Trends dashboard</a>{' '}
+            See the{' '}
+            <a href="https://epoch.ai/data/trends" target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8' }}>Epoch AI Trends dashboard</a>{' '}
             for the latest growth rate estimates.
           </p>
           {showMaxDuration && (
@@ -1027,9 +1041,6 @@ function App() {
         )}
       </div>
       
-      <p className="read-the-docs">
-        Based on the MIRI Technical Governance Team project.
-      </p>
     </div>
   )
 }
