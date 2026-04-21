@@ -123,6 +123,10 @@ const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; gpuCount:
   'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   gpuCount: 256,  gpuCostUsd: 25000, label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
 }
 
+// Hardware cost multipliers (Cottier et al. 2024, "The rising costs of training frontier AI models")
+const CHIP_TO_SERVER = 1.64    // Server overhead: CPUs, memory, intra-server networking, markup
+const SERVER_TO_CLUSTER = 1.23 // Cluster overhead: inter-server networking (interconnect)
+
 const Tooltip = ({ text }: { text: string }) => (
   <div className="tooltip-container">
     ⓘ
@@ -403,7 +407,8 @@ function App() {
     const totalTimeDays = totalTimeSeconds / (24 * 3600)
     const effectiveDays = totalTimeDays / totalEfficiency / Math.max(1e-6, rel.u)
     const effectiveSeconds = effectiveDays * 24 * 3600
-    const costUsd = numNodes * gpusPerNode * gpuCostUsd * rel.costMult
+    // Hardware cost: chip cost × Cottier et al. (2024) system multipliers × redundancy
+    const costUsd = numNodes * gpusPerNode * gpuCostUsd * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel.costMult
 
     // Global Utilization Metrics (End-to-End)
     // Theoretical FLOPs = 6 * parameters * tokens
@@ -1063,7 +1068,7 @@ function App() {
             <div style={{ marginTop: '20px', padding: '15px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155' }}>
               <p style={{ color: '#94a3b8', margin: '0 0 10px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Hardware Failures & Mitigation ({results.mitigation})
-                <Tooltip text="Goodput = fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead. Time inflation = 1/goodput. Cost includes any extra hardware for the mitigation." />
+                <Tooltip text="Goodput = fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead. Time inflation = 1/goodput. Hardware cost = chips × chip price × 1.64 (server overhead) × 1.23 (cluster networking) per Cottier et al. (2024), times any mitigation redundancy; excludes power, data center, and labor." />
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', fontSize: '0.9em' }}>
                 <div><span style={{ color: '#94a3b8' }}>Goodput</span><br/>
@@ -1079,7 +1084,7 @@ function App() {
                 <div><span style={{ color: '#94a3b8' }}>Quality penalty</span><br/>
                   <strong style={{ color: '#e2e8f0' }}>{results.etaMit}%</strong></div>
                 <div><span style={{ color: '#94a3b8' }}>Hardware cost</span><br/>
-                  <strong style={{ color: '#e2e8f0' }}>${(results.costUsd / 1e6).toFixed(1)}M{results.costMult > 1 ? ` (+${((results.costMult - 1) * 100).toFixed(0)}%)` : ''}</strong></div>
+                  <strong style={{ color: '#e2e8f0' }}>{results.costUsd >= 1e9 ? `$${(results.costUsd / 1e9).toFixed(2)}B` : `$${(results.costUsd / 1e6).toFixed(1)}M`}{results.costMult > 1 ? ` (+${((results.costMult - 1) * 100).toFixed(0)}%)` : ''}</strong></div>
                 <div><span style={{ color: '#94a3b8' }}>GPU-mem ckpt</span><br/>
                   <strong style={{ color: results.gpuMemFeasible ? '#10b981' : '#f43f5e' }}>{results.gpuMemFeasible ? 'feasible' : 'no spare HBM'}</strong></div>
               </div>
