@@ -572,7 +572,7 @@ The sweep identifies the model size that maximizes $C_{\text{quality}}$, which b
 
 ## 5. Hardware-Failure & Straggler-Mitigation Model
 
-Implemented by `reliability_model()` in `evasion_calculator.py` and mirrored exactly in the web simulator (`simulator-web/src/App.tsx`); the two are verified to produce identical knob values for matched inputs. For a given node configuration and mitigation strategy it returns four knobs that plug into the throughput/cost math:
+Implemented by `reliability_model()` (and `straggler_factor()`) in `evasion_calculator.py` and mirrored exactly in the web simulator (`simulator-web/src/reliabilityModel.ts`). The two implementations are held in lock-step by a committed cross-language parity harness (`verify_reliability_parity.py`, which runs the actual TypeScript model via Node) — it checks 252 reliability cases plus a straggler-tail sweep and asserts 0.00 relative difference. For a given node configuration and mitigation strategy it returns four knobs that plug into the throughput/cost math:
 
 | Knob | Symbol | Feeds into | Meaning |
 | :--- | :--- | :--- | :--- |

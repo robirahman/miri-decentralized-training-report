@@ -8,6 +8,14 @@ The replica divergence penalty is reported separately via η_chinchilla.
 """
 import math
 import sys
+
+# Ensure Unicode (box-drawing, ×, λ, …) prints even when stdout is redirected
+# on a non-UTF-8 default console, e.g. Windows cp1252.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
 sys.path.insert(0, "/mnt/chromeos/MyFiles/Documents/MIRI decentralized training report")
 from evasion_calculator import (
     straggler_factor, reliability_model, efficiency, alpha, compression_quality,

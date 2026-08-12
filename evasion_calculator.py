@@ -8,6 +8,14 @@ Based on formulas from Simulator_Documentation.md.
 
 import math
 import argparse
+import sys
+
+# Ensure Unicode (box-drawing, ×, λ, …) prints even when stdout is redirected
+# on a non-UTF-8 default console, e.g. Windows cp1252.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 # ── Fixed parameters ──────────────────────────────────────────────────────────
 
@@ -328,22 +336,32 @@ LEGITIMATE_SYSTEMS = [
 # ── Simulator formulas ────────────────────────────────────────────────────────
 
 def straggler_factor(n, mode=None):
-    """Straggler penalty factor for synchronous aggregation.
-    Modes:
-      "synchronous" — full penalty: f(n) = 1 + 0.05 * log2(n)
-      "threshold"   — stragglers dropped: f(n) = 1.0
-      "relay"       — async relay (e.g. R2): f(n) = 1 + 0.02 * log2(n)
+    """Slowest-worker sync-tail multiplier for a synchronous all-reduce over n
+    workers. Used for the legacy sub-tier tails (hierarchical regional/global,
+    PP stages). Mirrors reliability_model()'s f_tail exactly — same modes and
+    same slow-node base — so the flat and hierarchical/PP paths agree and stay
+    in lock-step with the web simulator's getStragglerFactor().
+
+    At the default slow-node settings the base reduces to 0.05*log2(n), so:
+      none / synchronous / checkpoint_elastic — full tail: 1 + 0.05*log2(n)
+      relay             — 1 + 0.40*base  (= 1 + 0.02*log2(n))
+      backup_workers    — 1 + 0.30*base  (= 1 + 0.015*log2(n))
+      threshold, async  — non-blocking: 1.0
     """
     if mode is None:
         mode = STRAGGLER_MODE
     if n <= 1:
         return 1.0
-    if mode == "threshold":
-        return 1.0
+    base = (_TAIL_COEF_BASE * SLOW_NODE_FRACTION
+            * (1.0 / max(1e-6, SLOW_NODE_SEVERITY) - 1.0) * math.log2(n))
+    if mode in ("threshold", "async"):
+        return 1.0                              # non-blocking: no tail wait
     if mode == "relay":
-        return 1.0 + 0.02 * math.log2(n)
-    # "synchronous" (default/legacy)
-    return 1.0 + 0.05 * math.log2(n)
+        return 1.0 + _RELAY_TAIL_FACTOR * base
+    if mode == "backup_workers":
+        return 1.0 + _BACKUP_TAIL_FACTOR * base
+    # none / synchronous / checkpoint_elastic — full synchronous tail
+    return 1.0 + base
 
 
 def reliability_model(n_nodes, gpu_count, time_seconds, params,
@@ -947,6 +965,9 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
 
     return {
         **_rel_fields(rel),
+        # Report the across-group DiLoCo tail actually used here (see f_regional /
+        # f_global below), not the reliability model's internal f_tail.
+        "f_straggler": f_global,
         "config": (config_name or "custom") + " (hierarchical)",
         "mode": f"Hier {nodes_per_group}x{n_groups}",
         "n_nodes": n_nodes,
@@ -1254,6 +1275,9 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
 
     return {
         **_rel_fields(rel),
+        # Report the across-group DiLoCo tail actually used here, not the
+        # reliability model's internal f_tail.
+        "f_straggler": f_n,
         "config": (config_name or "custom") + f" (PP-DiLoCo {pp_stages}x{n_groups})",
         "mode": f"PP-Group DiLoCo ({pp_stages} stages x {n_groups} groups)",
         "n_nodes": n_nodes,
@@ -1463,7 +1487,7 @@ def print_mitigation_comparison(config_name, n_nodes, target_params_b=None):
     print(f"  Total GPUs: {ctx['total_gpus']:,}  |  Cluster MTBF: {ctx['mtbf_hours']:.1f} h  |  "
           f"Expected failures over run: {ctx['expected_failures']:.0f}")
     print(f"\n  {'Strategy':>18} | {'f_tail':>6} | {'goodput':>7} | {'eta_mit':>7} | "
-          f"{'cost':>6} | {'C_local':>10} | {'wasted GPU-h':>12} | {'time x':>6} | {'cost':>8}")
+          f"{'HW mult':>7} | {'C_local':>10} | {'wasted GPU-h':>12} | {'time x':>6} | {'cost $':>8}")
     print("  " + "-" * 100)
     for m in MITIGATION_STRATEGIES:
         r = compute_scenario(config_name, n_nodes, straggler_mode=m,
@@ -1471,7 +1495,7 @@ def print_mitigation_comparison(config_name, n_nodes, target_params_b=None):
         cost_str = (f"${r['cost_usd']/1e9:.2f}B" if r['cost_usd'] >= 1e9
                     else f"${r['cost_usd']/1e6:.1f}M")
         print(f"  {m:>18} | {r['f_straggler']:>6.3f} | {r['goodput']*100:>6.1f}% | "
-              f"{r['eta_mitigation']:>7.3f} | {r['cost_mult']:>5.2f}x | "
+              f"{r['eta_mitigation']:>7.3f} | {r['cost_mult']:>6.2f}x | "
               f"{r['c_local']:>10.2e} | {r['gpu_hours_wasted']:>12.2e} | "
               f"{r['time_inflation']:>5.2f}x | {cost_str:>8}")
 
