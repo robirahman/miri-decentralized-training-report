@@ -570,26 +570,59 @@ The sweep identifies the model size that maximizes $C_{\text{quality}}$, which b
 
 ---
 
-## 5. Straggler & Congestion Model
+## 5. Hardware-Failure & Straggler-Mitigation Model
 
-### 5.1 Straggler Factor
+Implemented by `reliability_model()` (and `straggler_factor()`) in `evasion_calculator.py` and mirrored exactly in the web simulator (`simulator-web/src/reliabilityModel.ts`). The two implementations are held in lock-step by a committed cross-language parity harness (`verify_reliability_parity.py`, which runs the actual TypeScript model via Node) — it checks 252 reliability cases plus a straggler-tail sweep and asserts 0.00 relative difference. For a given node configuration and mitigation strategy it returns four knobs that plug into the throughput/cost math:
 
-$$f_{\text{straggler}}(n) = 1 + 0.05 \cdot \log_2(n)$$
+| Knob | Symbol | Feeds into | Meaning |
+| :--- | :--- | :--- | :--- |
+| Sync-tail inflation | $f_{\text{tail}}$ | $t_{\text{sync}} \mathrel{*}= f_{\text{tail}}$ | slowest-worker tail per sync round |
+| Goodput | $u \in (0,1]$ | achievable compute $\mathrel{*}= u$; time-to-train $\mathrel{*}= 1/u$ | fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead |
+| Quality penalty | $\eta_{\text{mit}} \in (0,1]$ | $\eta \mathrel{*}= \eta_{\text{mit}}$ | algorithmic cost of the strategy (staleness, dropped tokens) |
+| Cost multiplier | $c_{\text{mult}} \ge 1$ | cost & GPU count $\mathrel{*}= c_{\text{mult}}$ | extra hardware for redundancy |
 
-**Assumption:** In synchronous training, the group must wait for the slowest node. The expected delay of the maximum of $n$ workers scales logarithmically with $n$.
+All inputs below are literature-anchored **defaults** and are overridable from the CLI (`evasion_calculator.py --help`) and the web simulator's inputs.
 
-**Evidence:**
-*   From extreme value theory: if worker completion times are i.i.d. lognormal, the expected maximum grows as $O(\sqrt{\log n})$, which is well-approximated by a $\log n$ scaling for practical ranges of $n$.
-*   Empirically confirmed by [Chen et al. (2016)](https://arxiv.org/abs/1604.00981) and discussed in [PyTorch DDP straggler mitigation](https://pytorch.org/blog/straggler-mitigation/).
-*   The coefficient 0.05 is an engineering estimate. For $n = 72$: factor = 1.31 (31% overhead), which is plausible for heterogeneous WAN environments. The coefficient is tunable.
+### 5.1 Sync-tail factor $f_{\text{tail}}$
 
-### 5.2 Mitigation Strategies
+In synchronous training the group waits for the slowest node; the expected delay of the maximum of $n$ workers grows roughly as $\log_2 n$ (extreme-value theory for i.i.d. lognormal completion times; confirmed by [Chen et al. 2016](https://arxiv.org/abs/1604.00981), [PyTorch DDP straggler mitigation](https://pytorch.org/blog/straggler-mitigation/)). The tail coefficient is now *derived* from the fail-slow fields:
 
-| Strategy | Effect | Modeling |
+$$f_{\text{tail}}(n) = 1 + k_{\text{mode}} \cdot a_0 \cdot p_{\text{slow}}\left(\tfrac{1}{s_{\text{slow}}} - 1\right)\log_2 n$$
+
+where $a_0 = 0.75$ is calibrated so the default $p_{\text{slow}}=0.10$, $s_{\text{slow}}=0.60$ reproduce the legacy synchronous tail $1 + 0.05\log_2 n$. The mode factor $k_{\text{mode}}$ is $1.0$ for blocking strategies, $0.40$ for `relay` (→ $1 + 0.02\log_2 n$), $0.30$ for `backup_workers`, and $0$ for `threshold`/`async` (non-blocking).
+
+### 5.2 Goodput $u$ (hardware failures)
+
+Per-GPU failures occur at rate $\lambda$ (default $2\times10^{-5}$/GPU-hour $=$ 1 per 50,000 GPU-hours; converges across [Meta Llama 3 405B](https://arxiv.org/abs/2407.21783) — 419 interruptions/54 days on 16K GPUs — [Epoch AI](https://epoch.ai/publications/hardware-failures-wont-limit-ai-scaling), and this paper's Appendix F). The cluster failure rate $R = G\lambda$ scales **linearly with total GPU count** $G$ (100K GPUs → ~1 failure/30 min; 1M → ~1/3 min).
+
+Checkpoint/recovery overhead follows the **Young/Daly optimum** (per Epoch AI): time-lost fraction $L(t) = c/t + R(t/2 + t_{\text{rec}})$, minimized at $t^* = \sqrt{2c/R}$. Per strategy:
+
+*   **`none`** — no checkpointing, restart from scratch on any failure: $u = 1/(1 + R\,T/2)$. Collapses at scale (reproduces "~40% of jobs fail; completed jobs use only 20–30% of GPU resources", [Hu et al. NSDI 2024](https://arxiv.org/abs/2403.07648); 47.5% of worker runtime stalled, [arXiv:2506.04531](https://arxiv.org/abs/2506.04531)).
+*   **`synchronous`** — checkpoint + whole-cluster stall per failure: $u = 1 - [c/t^* + R(t^*/2 + t_{\text{rec}})]$.
+*   **`checkpoint_elastic`** — checkpoint bounds lost work, elastic rejoin avoids full-cluster downtime: $u = 1 - c/t^* - p_{\text{down}}$.
+*   **`relay` / `threshold`** — non-blocking; lose only nodes in recovery: $u = 1 - p_{\text{down}}$, where $p_{\text{down}} = 1 - e^{-\lambda t_{\text{rec}}}$.
+*   **`async`** (Decoupled DiLoCo) — non-blocking with coordination/grace-window overhead that grows with churn, bottoming out near the reported $u \approx 0.88$ under high failure ([Decoupled DiLoCo, Google DeepMind 2026](https://www.marktechpost.com/2026/04/23/google-deepmind-introduces-decoupled-diloco-an-asynchronous-training-architecture-achieving-88-goodput-under-high-hardware-failure-rates/)).
+*   **`backup_workers`** — $b$ spares absorb failures until simultaneous losses exceed the budget: $u = 1 - \max(0, p_{\text{down}} - b)$.
+
+**Checkpoint cost $c$** is derived from the full replica state ($P \cdot \text{bytes/param}$) over a local checkpoint link (~3 GB/s): `sync` uses the full cost (up to 43% slowdown), `async` hides ~98%, and **`gpu_memory`** (Epoch AI: store optimizer state on $M$ peer GPUs) is near-free **but requires free HBM for $M$ replicas — disabled when the model already saturates node VRAM**. This is a governance-relevant asymmetry: under the paper's HBM threshold, the evader's fastest failure-recovery path is unavailable, so failures are costlier for a sub-threshold operator than for a frontier datacenter.
+
+### 5.3 Quality penalty $\eta_{\text{mit}}$ and cost $c_{\text{mult}}$
+
+`threshold` drops the slowest $k$ (default 10%) each sync → $\eta_{\text{mit}} = 0.85$ (dropped-token staleness). `async` carries a small staleness penalty $\eta_{\text{mit}} = 0.97$. `backup_workers` charges $c_{\text{mult}} = 1 + b$ (default +5%, after [Chen et al.](https://arxiv.org/abs/1604.00981) $N{=}96/b{=}4$); all others $c_{\text{mult}} = 1$.
+
+### 5.4 Defaults (all overridable)
+
+| Field | Default | Source |
 | :--- | :--- | :--- |
-| **None** | Full straggler penalty | $f(n)$ applied directly |
-| **Threshold (90% cutoff)** | $f(n) = 1.0$ (no sync delay) | But 15% algorithmic efficiency penalty |
-| **Backup Workers (10% extra)** | 70% reduction in straggler delay | $N_{\text{eff}} = N / 1.1$; $f' = 1 + 0.3(f-1)$ |
+| Failure rate $\lambda$ | $2\times10^{-5}$/GPU-h | Meta Llama 3 / Epoch / App. F |
+| Recovery time $t_{\text{rec}}$ | 600 s (cold spare) | TRANSOM; Hu et al. |
+| Checkpoint mode | `async` | arXiv:2403.07648 |
+| Async goodput floor | 0.88 | Decoupled DiLoCo 2026 |
+| Backup overprovision $b$ | 0.05 | Chen et al. ($N{=}96/b{=}4$) |
+| Threshold drop $k$ / penalty | 0.10 / $\eta_{\text{mit}}{=}0.85$ | App. F; legacy doc |
+| Fail-slow fraction / severity | 0.10 / 0.60 | ByteDance trace |
+
+**Calibration safeguard:** the default strategy (`relay`) yields $u \approx 1$ at default $\lambda$, so headline results are unchanged (<0.01%); selecting `none`/`synchronous` or raising $\lambda$ is what reveals the cost. The default report ends with a side-by-side **mitigation comparison** table; `--mitigation-table CONFIG N` prints it alone.
 
 ---
 

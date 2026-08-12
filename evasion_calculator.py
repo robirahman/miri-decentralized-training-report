@@ -7,6 +7,15 @@ Based on formulas from Simulator_Documentation.md.
 """
 
 import math
+import argparse
+import sys
+
+# Ensure Unicode (box-drawing, ×, λ, …) prints even when stdout is redirected
+# on a non-UTF-8 default console, e.g. Windows cp1252.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 # ── Fixed parameters ──────────────────────────────────────────────────────────
 
@@ -92,7 +101,47 @@ COMPRESSION = 150       # 4-bit quantization + 25% sparsification
 LOCAL_BATCH = 131_072   # tokens per local step
 BYTES_PER_PARAM = 16    # FP16 mixed-precision training
 BITS_PER_PSEUDO_GRAD = 16  # FP16 pseudo-gradients before compression
-STRAGGLER_MODE = "relay"   # "synchronous", "threshold", or "relay"
+STRAGGLER_MODE = "relay"   # legacy sub-tier tail mode (hierarchical/PP): "synchronous", "threshold", "relay"
+
+# ── Hardware-failure & straggler-mitigation model ─────────────────────────────
+# Unified reliability model (see reliability_model() and Simulator_Documentation.md §5).
+# Every value below is a literature-anchored DEFAULT and is overridable from the
+# CLI (evasion_calculator.py --help) and from the web simulator's inputs.
+#
+# MITIGATION selects how the run copes with random hardware failures and slow
+# nodes. The default ("relay") reproduces the legacy results within rounding;
+# selecting "none" or raising FAILURE_RATE_PER_GPU_HOUR reveals the cost.
+MITIGATION = "relay"
+#   "none"               sync, wait-for-all, NO checkpoint -> restart from scratch on any failure
+#   "synchronous"        sync, wait-for-all, checkpoint+restart (whole cluster stalls per failure)
+#   "threshold"          quorum: drop slowest k% each sync (no extra HW; discarded tokens)
+#   "relay"              async relay (R2): non-blocking, elastic rejoin  [DEFAULT]
+#   "async"              Decoupled DiLoCo: quorum-async, non-blocking, staleness penalty
+#   "backup_workers"     overprovision b spares; first-N aggregation (extra HW cost)
+#   "checkpoint_elastic" (a)sync checkpoint + elastic rejoin; bounds lost work without full stall
+STRAGGLER_MODE = MITIGATION   # unified: MITIGATION drives both the reliability model and the
+                              # legacy sub-tier (hierarchical/PP) sync tails via straggler_factor
+
+FAILURE_RATE_PER_GPU_HOUR = 2.0e-5   # 1 failure / 50,000 GPU-hours (Meta Llama 3; Epoch AI; App. F)
+RECOVERY_TIME_S = 600.0              # detect + restart + reload a failed node (cold spare, s)
+CHECKPOINT_MODE = "async"            # "sync" | "async" | "gpu_memory" (Epoch AI)
+CHECKPOINT_COST_S = None             # checkpoint write time (s); None => derived from state size
+LOCAL_CHECKPOINT_BW_BPS = 3e9 * 8    # per-node local checkpoint bandwidth (~3 GB/s NVMe), bits/s
+SLOW_NODE_FRACTION = 0.10            # fraction of nodes persistently fail-slow (ByteDance trace)
+SLOW_NODE_SEVERITY = 0.60            # a fail-slow node runs at this fraction of normal speed
+BACKUP_FRACTION = 0.05               # overprovision for backup_workers (Chen et al. N=96/b=4 ~4-6%)
+THRESHOLD_DROP = 0.10               # quorum: drop slowest 10% each sync (paper App. F: 90% quorum)
+THRESHOLD_QUALITY_PENALTY = 0.85    # eta multiplier from dropped-token staleness (existing doc: x1.15)
+ASYNC_STALENESS_PENALTY = 0.97      # eta multiplier from quorum-async gradient staleness
+ASYNC_GOODPUT_FLOOR = 0.88          # Decoupled DiLoCo goodput under HIGH failure (reference point)
+CKPT_REPLICAS = 4                   # M peer replicas for gpu_memory checkpointing (Epoch AI)
+
+# Tail coefficient calibrated so the DEFAULT slow-node settings reproduce the
+# legacy synchronous tail f(n) = 1 + 0.05*log2(n):
+#   0.05 = _TAIL_COEF_BASE * SLOW_NODE_FRACTION * (1/SLOW_NODE_SEVERITY - 1)
+_TAIL_COEF_BASE = 0.05 / (0.10 * (1 / 0.60 - 1))   # ~= 0.75
+_RELAY_TAIL_FACTOR = 0.40    # relay/async expose 40% of the sync tail -> 0.02*log2(n) default
+_BACKUP_TAIL_FACTOR = 0.30   # backup workers drop most of the tail (legacy "redundancy" 0.3x)
 
 # Time
 TIME_YEARS = 1.5
@@ -287,22 +336,196 @@ LEGITIMATE_SYSTEMS = [
 # ── Simulator formulas ────────────────────────────────────────────────────────
 
 def straggler_factor(n, mode=None):
-    """Straggler penalty factor for synchronous aggregation.
-    Modes:
-      "synchronous" — full penalty: f(n) = 1 + 0.05 * log2(n)
-      "threshold"   — stragglers dropped: f(n) = 1.0
-      "relay"       — async relay (e.g. R2): f(n) = 1 + 0.02 * log2(n)
+    """Slowest-worker sync-tail multiplier for a synchronous all-reduce over n
+    workers. Used for the legacy sub-tier tails (hierarchical regional/global,
+    PP stages). Mirrors reliability_model()'s f_tail exactly — same modes and
+    same slow-node base — so the flat and hierarchical/PP paths agree and stay
+    in lock-step with the web simulator's getStragglerFactor().
+
+    At the default slow-node settings the base reduces to 0.05*log2(n), so:
+      none / synchronous / checkpoint_elastic — full tail: 1 + 0.05*log2(n)
+      relay             — 1 + 0.40*base  (= 1 + 0.02*log2(n))
+      backup_workers    — 1 + 0.30*base  (= 1 + 0.015*log2(n))
+      threshold, async  — non-blocking: 1.0
     """
     if mode is None:
         mode = STRAGGLER_MODE
     if n <= 1:
         return 1.0
-    if mode == "threshold":
-        return 1.0
+    base = (_TAIL_COEF_BASE * SLOW_NODE_FRACTION
+            * (1.0 / max(1e-6, SLOW_NODE_SEVERITY) - 1.0) * math.log2(n))
+    if mode in ("threshold", "async"):
+        return 1.0                              # non-blocking: no tail wait
     if mode == "relay":
-        return 1.0 + 0.02 * math.log2(n)
-    # "synchronous" (default/legacy)
-    return 1.0 + 0.05 * math.log2(n)
+        return 1.0 + _RELAY_TAIL_FACTOR * base
+    if mode == "backup_workers":
+        return 1.0 + _BACKUP_TAIL_FACTOR * base
+    # none / synchronous / checkpoint_elastic — full synchronous tail
+    return 1.0 + base
+
+
+def reliability_model(n_nodes, gpu_count, time_seconds, params,
+                      bytes_per_param, vram_gb, mode=None, tail_n=None,
+                      failure_rate=None, recovery_time_s=None,
+                      checkpoint_mode=None, checkpoint_cost_s=None,
+                      slow_fraction=None, slow_severity=None,
+                      backup_fraction=None, threshold_drop=None,
+                      ckpt_replicas=None):
+    """Unified analytic hardware-failure & straggler-mitigation model.
+
+    Deterministic, closed-form (matches the rest of the simulator). For a given
+    node configuration and mitigation strategy, returns four knobs that plug
+    into the existing throughput/cost math:
+
+      f_tail    : slowest-worker sync-tail multiplier  (-> t_sync *= f_tail)
+      u         : goodput in (0,1] — fraction of GPU-hours doing useful work
+                  after failures, downtime, lost work, checkpoint overhead
+                  (-> achievable tokens/compute *= u; time-to-train *= 1/u)
+      eta_mit   : algorithmic quality penalty of the strategy (-> eta *= eta_mit)
+      cost_mult : extra hardware multiplier (-> cost & GPU count *= cost_mult)
+
+    Plus diagnostics (cluster MTBF, expected failures, optimal checkpoint
+    interval, GPU-memory-checkpointing feasibility). See Simulator_Documentation §5.
+
+    `mode` accepts the MITIGATION values. `tail_n` overrides the node count used
+    for the sync tail (e.g. n_groups for the across-group DiLoCo sync)."""
+    mode = mode if mode is not None else MITIGATION
+    failure_rate = FAILURE_RATE_PER_GPU_HOUR if failure_rate is None else failure_rate
+    recovery_time_s = RECOVERY_TIME_S if recovery_time_s is None else recovery_time_s
+    checkpoint_mode = CHECKPOINT_MODE if checkpoint_mode is None else checkpoint_mode
+    checkpoint_cost_s = CHECKPOINT_COST_S if checkpoint_cost_s is None else checkpoint_cost_s
+    slow_fraction = SLOW_NODE_FRACTION if slow_fraction is None else slow_fraction
+    slow_severity = SLOW_NODE_SEVERITY if slow_severity is None else slow_severity
+    backup_fraction = BACKUP_FRACTION if backup_fraction is None else backup_fraction
+    threshold_drop = THRESHOLD_DROP if threshold_drop is None else threshold_drop
+    ckpt_replicas = CKPT_REPLICAS if ckpt_replicas is None else ckpt_replicas
+
+    g = max(1, n_nodes * gpu_count)            # total GPUs
+    t_h = time_seconds / 3600.0                # run length (hours)
+    lam = max(0.0, failure_rate)               # per-GPU failure rate (1/h)
+    cluster_rate = g * lam                     # cluster failures per hour
+    recovery_h = recovery_time_s / 3600.0
+    expected_failures = cluster_rate * t_h
+    mtbf_h = (1.0 / cluster_rate) if cluster_rate > 0 else float('inf')
+    # Per-node unavailable fraction (elastic families lose only the failed node)
+    p_down = 1.0 - math.exp(-lam * recovery_h)
+
+    # ── f_tail : slowest-worker sync tail ────────────────────────────────────
+    nt = tail_n if tail_n is not None else n_nodes
+    if nt <= 1:
+        base = 0.0
+    else:
+        dcoef = _TAIL_COEF_BASE * slow_fraction * (1.0 / max(1e-6, slow_severity) - 1.0)
+        base = dcoef * math.log2(nt)
+    if mode in ("threshold", "async"):
+        f_tail = 1.0                            # non-blocking: no tail wait
+    elif mode == "relay":
+        f_tail = 1.0 + _RELAY_TAIL_FACTOR * base
+    elif mode == "backup_workers":
+        f_tail = 1.0 + _BACKUP_TAIL_FACTOR * base
+    else:                                       # none / synchronous / checkpoint_elastic
+        f_tail = 1.0 + base
+
+    # ── checkpoint cost c (hours) — DiLoCo replica holds the full model+state ─
+    state_bytes = params * bytes_per_param
+    if checkpoint_cost_s is not None:
+        c_raw_h = checkpoint_cost_s / 3600.0
+    else:
+        c_raw_h = (state_bytes * 8.0 / LOCAL_CHECKPOINT_BW_BPS) / 3600.0
+    # gpu_memory checkpointing (Epoch AI) needs free HBM for M peer replicas;
+    # infeasible when the model already saturates node VRAM (the paper's threshold).
+    free_vram_bytes = vram_gb * 1e9 - state_bytes
+    gpu_mem_feasible = free_vram_bytes >= ckpt_replicas * (state_bytes / max(1, n_nodes))
+    if checkpoint_mode == "async":
+        c_eff_h = c_raw_h * 0.02                 # overlapped with compute (~98% hidden)
+    elif checkpoint_mode == "gpu_memory" and gpu_mem_feasible:
+        c_eff_h = c_raw_h * 0.005                # peer-GPU read over fast interconnect
+    else:
+        c_eff_h = c_raw_h                        # sync (or gpu_memory fallback)
+
+    def _young_daly(c_h, full_recovery):
+        """Time-lost fraction with optimal checkpointing (Young/Daly / Epoch AI):
+        L(t) = c/t + R*(t/2 [+ recovery]); t* = sqrt(2c/R)."""
+        if cluster_rate <= 0:
+            return 0.0, float('inf')
+        t_star = math.sqrt(2.0 * c_h / cluster_rate) if c_h > 0 else float('inf')
+        if t_star == float('inf'):
+            return cluster_rate * recovery_h, t_star
+        rec = recovery_h if full_recovery else 0.0
+        L = c_h / t_star + cluster_rate * (t_star / 2.0 + rec)
+        return L, t_star
+
+    # ── u : goodput ──────────────────────────────────────────────────────────
+    t_star_h = float('inf')
+    if mode == "none":
+        # No checkpointing: each failure forces rework from the start of the run.
+        u = 1.0 / (1.0 + cluster_rate * t_h / 2.0)
+    elif mode == "synchronous":
+        # Whole cluster stalls for recovery + lost work since last checkpoint.
+        L, t_star_h = _young_daly(c_eff_h, full_recovery=True)
+        u = max(0.0, 1.0 - L)
+    elif mode == "checkpoint_elastic":
+        # Checkpoint bounds lost work; elastic rejoin avoids full-cluster downtime.
+        L, t_star_h = _young_daly(c_eff_h, full_recovery=False)
+        u = max(0.0, 1.0 - L - p_down)
+    elif mode == "backup_workers":
+        # b spares absorb failures until simultaneous losses exceed the budget.
+        u = 1.0 - max(0.0, p_down - backup_fraction)
+    elif mode == "async":
+        # Quorum-async (Decoupled DiLoCo): non-blocking, but coordination/grace-window
+        # overhead grows with churn, bottoming out near the reported high-failure goodput.
+        churn = 1.0 - math.exp(-cluster_rate * recovery_h)
+        u = 1.0 - p_down - (1.0 - ASYNC_GOODPUT_FLOOR) * churn
+    else:  # relay / threshold — non-blocking, lose only nodes in recovery
+        u = 1.0 - p_down
+
+    # ── eta_mit : algorithmic quality penalty ────────────────────────────────
+    if mode == "threshold":
+        eta_mit = THRESHOLD_QUALITY_PENALTY
+    elif mode == "async":
+        eta_mit = ASYNC_STALENESS_PENALTY
+    else:
+        eta_mit = 1.0
+
+    # ── cost_mult : extra hardware ───────────────────────────────────────────
+    cost_mult = (1.0 + backup_fraction) if mode == "backup_workers" else 1.0
+
+    return {
+        "mitigation": mode,
+        "f_tail": f_tail,
+        "u": u,
+        "eta_mit": eta_mit,
+        "cost_mult": cost_mult,
+        "total_gpus": g,
+        "failure_rate": lam,
+        "cluster_failures_per_day": cluster_rate * 24.0,
+        "mtbf_hours": mtbf_h,
+        "expected_failures": expected_failures,
+        "p_node_down": p_down,
+        "checkpoint_cost_s": c_eff_h * 3600.0,
+        "checkpoint_interval_h": t_star_h,
+        "gpu_mem_checkpoint_feasible": gpu_mem_feasible,
+        "gpu_hours_wasted": g * t_h * (1.0 - u),
+        "time_inflation": (1.0 / u) if u > 0 else float('inf'),
+    }
+
+
+def _rel_fields(rel):
+    """Reliability/mitigation fields to merge into every scenario result dict."""
+    return {
+        "mitigation": rel["mitigation"],
+        "goodput": rel["u"],
+        "eta_mitigation": rel["eta_mit"],
+        "cost_mult": rel["cost_mult"],
+        "f_straggler": rel["f_tail"],
+        "gpu_hours_wasted": rel["gpu_hours_wasted"],
+        "time_inflation": rel["time_inflation"],
+        "mtbf_hours": rel["mtbf_hours"],
+        "cluster_failures_per_day": rel["cluster_failures_per_day"],
+        "expected_failures": rel["expected_failures"],
+        "checkpoint_interval_h": rel["checkpoint_interval_h"],
+        "gpu_mem_checkpoint_feasible": rel["gpu_mem_checkpoint_feasible"],
+    }
 
 
 def alpha(params_billion):
@@ -521,8 +744,10 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     # Sync time (base, before straggler): upload + download + latency
     t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
 
-    # Straggler factor
-    f_n = straggler_factor(n_nodes, mode=straggler_mode)
+    # Reliability model: sync tail + goodput + quality + cost knobs
+    rel = reliability_model(n_nodes, cfg["gpu_count"], time_seconds, params,
+                            bytes_per_param, vram_gb, mode=straggler_mode)
+    f_n = rel["f_tail"]
 
     # Sync time with straggler
     t_sync = t_sync_base * f_n
@@ -542,6 +767,7 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
     n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
     total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
+    total_tokens *= rel["u"]   # goodput: failures/downtime/lost work reduce useful tokens
     c_throughput = 6 * params * total_tokens
     c_local = c_throughput * eta
 
@@ -562,19 +788,20 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
     eta_replica = chi_full / chi if chi > 0 else 0
 
-    # Fold replica penalty into eta; C_local is now true local-equivalent
-    eta = eta * eta_replica
+    # Fold replica penalty + mitigation quality penalty into eta
+    eta = eta * eta_replica * rel["eta_mit"]
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
     # Cost
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
 
     # Verify under CCC threshold
     h100_eq = cfg.get("h100_equiv", cfg.get("pflops_fp16", pflops) * 1000 / 990)
     assert h100_eq <= 16.01, f"{config_name} exceeds CCC threshold!"
 
     return {
+        **_rel_fields(rel),
         "config": config_name,
         "n_nodes": n_nodes,
         "total_gpus": n_nodes * cfg["gpu_count"],
@@ -704,8 +931,14 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     eta = efficiency(h_eff, params_b, compression_ratio=compression,
                      scenario=scenario, error_feedback=error_feedback)
 
-    # Total local-equivalent FLOPs
-    c_throughput = n_nodes * effective_flops * time_seconds
+    # Reliability model: goodput / quality / cost from failures + mitigation
+    # (sub-tier sync tails keep their legacy f_regional / f_global above; the
+    #  reliability tail is evaluated at the across-group level via tail_n).
+    rel = reliability_model(n_nodes, cfg.get("gpu_count", 1), time_seconds, params,
+                            bytes_per_param, vram_gb, mode=straggler_mode, tail_n=n_groups)
+
+    # Total local-equivalent FLOPs (goodput-adjusted)
+    c_throughput = n_nodes * effective_flops * time_seconds * rel["u"]
     c_local = c_throughput * eta
 
     # Training details
@@ -722,15 +955,19 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
                                         loss_multiplier=1.0)
     eta_replica = chi_full / chi if chi > 0 else 0
 
-    # Fold replica penalty into eta; C_local is now true local-equivalent
-    eta = eta * eta_replica
+    # Fold replica penalty + mitigation quality penalty into eta
+    eta = eta * eta_replica * rel["eta_mit"]
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
     # Cost
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
 
     return {
+        **_rel_fields(rel),
+        # Report the across-group DiLoCo tail actually used here (see f_regional /
+        # f_global below), not the reliability model's internal f_tail.
+        "f_straggler": f_global,
         "config": (config_name or "custom") + " (hierarchical)",
         "mode": f"Hier {nodes_per_group}x{n_groups}",
         "n_nodes": n_nodes,
@@ -809,8 +1046,10 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     # Communication volume for DiLoCo sync (total params, after compression)
     v_bits = total_params_b * 1e9 * bpg / compression
 
-    # Sync time
-    f_n = straggler_factor(n_nodes, mode=straggler_mode)
+    # Sync time (reliability model supplies the sync tail + goodput/quality/cost)
+    rel = reliability_model(n_nodes, cfg["gpu_count"], time_seconds,
+                            total_params_b * 1e9, bpp, vram_gb, mode=straggler_mode)
+    f_n = rel["f_tail"]
     t_sync_base = v_bits / BW_UP_BPS + v_bits / BW_DOWN_BPS + LATENCY_S
     t_sync = t_sync_base * f_n
 
@@ -827,7 +1066,7 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     # Total local-equivalent FLOPs (based on active params compute rate)
     # Adjust for EP latency overhead
     ep_overhead = t_ep / (t_comp + t_ep)
-    c_throughput = n_nodes * effective_flops * time_seconds * (1 - ep_overhead)
+    c_throughput = n_nodes * effective_flops * time_seconds * (1 - ep_overhead) * rel["u"]
     c_local = c_throughput * eta
 
     # Training details (based on active params)
@@ -844,14 +1083,15 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
     eta_replica = chi_full / chi if chi > 0 else 0
 
-    # Fold replica penalty into eta; C_local is now true local-equivalent
-    eta = eta * eta_replica
+    # Fold replica penalty + mitigation quality penalty into eta
+    eta = eta * eta_replica * rel["eta_mit"]
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
 
     return {
+        **_rel_fields(rel),
         "config": config_name + f" (MoE {total_params_b:.0f}B/{active_params_b:.0f}B)",
         "n_nodes": n_nodes,
         "total_gpus": n_nodes * cfg["gpu_count"],
@@ -987,6 +1227,10 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
     t_sync = t_sync_base * f_n
 
+    # Reliability model: goodput / quality / cost (sub-tier PP & group tails kept above)
+    rel = reliability_model(n_nodes, cfg.get("gpu_count", 1), time_seconds, params,
+                            bytes_per_param, vram_gb, mode=straggler_mode, tail_n=n_groups)
+
     # Minimum H (inner steps before DiLoCo sync)
     h_min = max(1, math.ceil(t_sync / pp_step_time))
 
@@ -1004,6 +1248,7 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     outer_step_time = max(h_min * pp_step_time, t_sync)
     n_outer_steps = time_seconds / outer_step_time
     total_tokens = n_outer_steps * h_min * LOCAL_BATCH * n_groups
+    total_tokens *= rel["u"]   # goodput: failures/downtime/lost work reduce useful tokens
 
     c_throughput = 6 * params * total_tokens
     c_local = c_throughput * eta
@@ -1017,8 +1262,8 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
                                         loss_multiplier=1.0) if n_groups > 1 else 1.0
     eta_replica = chi_full / chi if chi > 0 else 0
 
-    # Fold replica penalty into eta; C_local is now true local-equivalent
-    eta = eta * eta_replica
+    # Fold replica penalty + mitigation quality penalty into eta
+    eta = eta * eta_replica * rel["eta_mit"]
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
@@ -1026,9 +1271,13 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
 
     return {
+        **_rel_fields(rel),
+        # Report the across-group DiLoCo tail actually used here, not the
+        # reliability model's internal f_tail.
+        "f_straggler": f_n,
         "config": (config_name or "custom") + f" (PP-DiLoCo {pp_stages}x{n_groups})",
         "mode": f"PP-Group DiLoCo ({pp_stages} stages x {n_groups} groups)",
         "n_nodes": n_nodes,
@@ -1214,6 +1463,41 @@ def print_detailed(config_name, n_nodes):
     print(f"  Chinchilla tokens:  {r['chinchilla_tokens_T']:.1f}T")
     print(f"  Overtraining:       {r['overtraining_ratio']:.1f}x")
     print(f"  Cost:               ${r['cost_usd']:,.0f}")
+    print(f"  -- Reliability ({r['mitigation']}) --")
+    print(f"  Cluster MTBF:       {r['mtbf_hours']:.1f} h  ({r['cluster_failures_per_day']:.1f} failures/day)")
+    print(f"  Expected failures:  {r['expected_failures']:.0f} over the run")
+    print(f"  Goodput:            {r['goodput']*100:.1f}%  (GPU-hours wasted: {r['gpu_hours_wasted']:.2e})")
+    print(f"  Time inflation:     {r['time_inflation']:.3f}x")
+
+
+# Ordered list of mitigation strategies for side-by-side comparison
+MITIGATION_STRATEGIES = ["none", "synchronous", "threshold", "relay",
+                         "async", "backup_workers", "checkpoint_elastic"]
+
+
+def print_mitigation_comparison(config_name, n_nodes, target_params_b=None):
+    """Side-by-side comparison of failure/straggler mitigation strategies:
+    goodput, quality penalty, hardware cost, and resulting local-equivalent FLOP."""
+    print(f"\n--- Mitigation comparison: {config_name}, N={n_nodes} "
+          f"(λ={FAILURE_RATE_PER_GPU_HOUR:.1e}/GPU-h, recovery={RECOVERY_TIME_S:.0f}s, "
+          f"checkpoint={CHECKPOINT_MODE}) ---")
+    # Failure context (independent of strategy)
+    ctx = compute_scenario(config_name, n_nodes, straggler_mode="relay",
+                           target_params_b=target_params_b)
+    print(f"  Total GPUs: {ctx['total_gpus']:,}  |  Cluster MTBF: {ctx['mtbf_hours']:.1f} h  |  "
+          f"Expected failures over run: {ctx['expected_failures']:.0f}")
+    print(f"\n  {'Strategy':>18} | {'f_tail':>6} | {'goodput':>7} | {'eta_mit':>7} | "
+          f"{'HW mult':>7} | {'C_local':>10} | {'wasted GPU-h':>12} | {'time x':>6} | {'cost $':>8}")
+    print("  " + "-" * 100)
+    for m in MITIGATION_STRATEGIES:
+        r = compute_scenario(config_name, n_nodes, straggler_mode=m,
+                             target_params_b=target_params_b)
+        cost_str = (f"${r['cost_usd']/1e9:.2f}B" if r['cost_usd'] >= 1e9
+                    else f"${r['cost_usd']/1e6:.1f}M")
+        print(f"  {m:>18} | {r['f_straggler']:>6.3f} | {r['goodput']*100:>6.1f}% | "
+              f"{r['eta_mitigation']:>7.3f} | {r['cost_mult']:>6.2f}x | "
+              f"{r['c_local']:>10.2e} | {r['gpu_hours_wasted']:>12.2e} | "
+              f"{r['time_inflation']:>5.2f}x | {cost_str:>8}")
 
 
 def print_large_scale_table(config_name, compression=COMPRESSION):
@@ -1551,7 +1835,9 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     t_comp = (6 * params * LOCAL_BATCH) / effective_flops
     v_bits = params * bits_per_pseudo_grad / compression
     t_sync_base = v_bits / bw_up_bps + v_bits / bw_down_bps + latency_s
-    f_n = straggler_factor(n_nodes, mode=straggler_mode)
+    rel = reliability_model(n_nodes, cfg.get("gpu_count", 1), time_seconds, params,
+                            bytes_per_param, vram_gb, mode=straggler_mode)
+    f_n = rel["f_tail"]
     t_sync = t_sync_base * f_n
 
     if n_nodes == 1:
@@ -1568,6 +1854,7 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     outer_step_time = max(h_used * t_comp, t_sync) if n_nodes > 1 else h_used * t_comp
     n_outer_steps = time_seconds / outer_step_time if outer_step_time > 0 else 0
     total_tokens = n_outer_steps * h_used * LOCAL_BATCH * n_nodes
+    total_tokens *= rel["u"]   # goodput: failures/downtime/lost work reduce useful tokens
     c_throughput = 6 * params * total_tokens
     c_local = c_throughput * eta
 
@@ -1588,14 +1875,15 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
                                         loss_multiplier=1.0) if n_nodes > 1 else 1.0
     eta_replica = chi_full / chi if chi > 0 else 0
 
-    # Fold replica penalty into eta; C_local is now true local-equivalent
-    eta = eta * eta_replica
+    # Fold replica penalty + mitigation quality penalty into eta
+    eta = eta * eta_replica * rel["eta_mit"]
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
 
     return {
+        **_rel_fields(rel),
         "n_nodes": n_nodes,
         "total_gpus": n_nodes * cfg["gpu_count"],
         "pflops_per_node": pflops,
@@ -2133,6 +2421,49 @@ def print_collateral_damage():
 
 
 if __name__ == "__main__":
+    # ── CLI: override reliability/mitigation knobs (all optional) ────────────
+    _p = argparse.ArgumentParser(
+        description="Treaty Evasion / Decentralized Training Simulator. "
+                    "With no arguments, prints the full default report. Flags "
+                    "override the hardware-failure & straggler-mitigation model.")
+    _p.add_argument("--mitigation", choices=MITIGATION_STRATEGIES,
+                    help="failure/straggler strategy (default: %s)" % MITIGATION)
+    _p.add_argument("--failure-rate", type=float,
+                    help="per-GPU failure rate (1/GPU-hour; default %.1e)" % FAILURE_RATE_PER_GPU_HOUR)
+    _p.add_argument("--recovery-time", type=float,
+                    help="failed-node recovery time in seconds (default %.0f)" % RECOVERY_TIME_S)
+    _p.add_argument("--checkpoint-mode", choices=["sync", "async", "gpu_memory"],
+                    help="checkpoint mode (default %s)" % CHECKPOINT_MODE)
+    _p.add_argument("--slow-fraction", type=float,
+                    help="fraction of nodes persistently fail-slow (default %.2f)" % SLOW_NODE_FRACTION)
+    _p.add_argument("--slow-severity", type=float,
+                    help="speed of a fail-slow node as fraction of normal (default %.2f)" % SLOW_NODE_SEVERITY)
+    _p.add_argument("--backup-fraction", type=float,
+                    help="overprovision fraction for backup_workers (default %.2f)" % BACKUP_FRACTION)
+    _p.add_argument("--mitigation-table", nargs=2, metavar=("CONFIG", "N"),
+                    help="print ONLY the mitigation comparison for CONFIG at N nodes, then exit")
+    _args = _p.parse_args()
+
+    if _args.mitigation is not None:
+        MITIGATION = STRAGGLER_MODE = _args.mitigation
+    if _args.failure_rate is not None:
+        FAILURE_RATE_PER_GPU_HOUR = _args.failure_rate
+    if _args.recovery_time is not None:
+        RECOVERY_TIME_S = _args.recovery_time
+    if _args.checkpoint_mode is not None:
+        CHECKPOINT_MODE = _args.checkpoint_mode
+    if _args.slow_fraction is not None:
+        SLOW_NODE_FRACTION = _args.slow_fraction
+    if _args.slow_severity is not None:
+        SLOW_NODE_SEVERITY = _args.slow_severity
+    if _args.backup_fraction is not None:
+        BACKUP_FRACTION = _args.backup_fraction
+
+    if _args.mitigation_table is not None:
+        _cfg_name, _n = _args.mitigation_table[0], int(_args.mitigation_table[1])
+        print_mitigation_comparison(_cfg_name, _n)
+        raise SystemExit(0)
+
     print("=" * 80)
     print("TREATY EVASION SCENARIO: Maximum Distributed Training Below CCC Threshold")
     print(f"Time limit: {TIME_YEARS} years ({TIME_SECONDS/86400:.0f} days)")
@@ -2497,3 +2828,13 @@ if __name__ == "__main__":
                   f"{model_str:>7} | "
                   f"{best.get('pp_stages',1):>2} | {best['c_quality']:>10.2e} | "
                   f"{improvement:>12.2f}x")
+
+    # ── PART N: Hardware-failure & straggler-mitigation comparison ───────────
+    print("\n\n" + "=" * 100)
+    print("HARDWARE-FAILURE & STRAGGLER-MITIGATION COMPARISON")
+    print("How each strategy trades goodput, training quality, and hardware cost.")
+    print("Override defaults with CLI flags (see --help) or the web simulator.")
+    print("=" * 100)
+    for _cfg_name, _n in [("50x A100 80GB", 72), ("50x A100 80GB", 500),
+                          ("50x A100 80GB", 4000), ("16x H100 FP8", 2000)]:
+        print_mitigation_comparison(_cfg_name, _n)

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { reliabilityModel, stragglerFactor } from './reliabilityModel'
 
 // --- Quality factor helpers (matching evasion_calculator.py) ---
 
@@ -89,34 +90,37 @@ function chinchillaEfficiency(params: number, tokens: number, cFlop: number,
 // Hardware presets. Sub-CCC rows are the max node under the 16 H100-equiv FP16 threshold.
 // Pod/rack rows are standard manufacturer-defined scale-up units (NVLink/ICI/UB domains or
 // named reference architectures like DGX SuperPOD).
-const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; label: string; group: string }> = {
-  'custom':       { pflops: 16,    vram: 2304, label: 'Custom',               group: '' },
+// gpuCount / gpuCostUsd drive the cluster failure rate and hardware cost in the
+// reliability panel; per-GPU costs match evasion_calculator.py CONFIGS (pod/rack
+// rows reuse the same per-accelerator price; B100/B200 are early-2026 estimates).
+const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; gpuCount: number; gpuCostUsd: number; label: string; group: string }> = {
+  'custom':       { pflops: 16,    vram: 2304, gpuCount: 16,   gpuCostUsd: 25000, label: 'Custom',               group: '' },
   // NVIDIA sub-CCC nodes
-  '50xA100':      { pflops: 15.60, vram: 4000, label: '50x A100 80GB',        group: 'NVIDIA (sub-CCC)' },
-  '16xH100':      { pflops: 15.84, vram: 1280, label: '16x H100 SXM',         group: 'NVIDIA (sub-CCC)' },
-  '16xGH200':     { pflops: 15.84, vram: 2304, label: '16x GH200',            group: 'NVIDIA (sub-CCC)' },
-  '9xB100':       { pflops: 15.75, vram: 1728, label: '9x B100',              group: 'NVIDIA (sub-CCC)' },
-  '7xB200':       { pflops: 15.75, vram: 1344, label: '7x B200',              group: 'NVIDIA (sub-CCC)' },
+  '50xA100':      { pflops: 15.60, vram: 4000, gpuCount: 50,   gpuCostUsd: 7000,  label: '50x A100 80GB',        group: 'NVIDIA (sub-CCC)' },
+  '16xH100':      { pflops: 15.84, vram: 1280, gpuCount: 16,   gpuCostUsd: 25000, label: '16x H100 SXM',         group: 'NVIDIA (sub-CCC)' },
+  '16xGH200':     { pflops: 15.84, vram: 2304, gpuCount: 16,   gpuCostUsd: 28000, label: '16x GH200',            group: 'NVIDIA (sub-CCC)' },
+  '9xB100':       { pflops: 15.75, vram: 1728, gpuCount: 9,    gpuCostUsd: 30000, label: '9x B100',              group: 'NVIDIA (sub-CCC)' },
+  '7xB200':       { pflops: 15.75, vram: 1344, gpuCount: 7,    gpuCostUsd: 35000, label: '7x B200',              group: 'NVIDIA (sub-CCC)' },
   // NVIDIA pods / scale-up racks
-  'NVL32_GH200':  { pflops: 31.68,   vram: 4608,   label: 'GH200 NVL32 (32x GH200)',              group: 'NVIDIA (pods)' },
-  'NVL72_B200':   { pflops: 162.0,   vram: 13824,  label: 'GB200 NVL72 (72x B200)',               group: 'NVIDIA (pods)' },
-  'H100_SuperPOD':{ pflops: 253.44,  vram: 20480,  label: 'DGX H100 SuperPOD (32 DGX, 256x H100)', group: 'NVIDIA (pods)' },
-  'A100_SuperPOD':{ pflops: 349.44,  vram: 89600,  label: 'DGX A100 SuperPOD (140 DGX, 1120x A100 80GB)', group: 'NVIDIA (pods)' },
+  'NVL32_GH200':  { pflops: 31.68,   vram: 4608,   gpuCount: 32,   gpuCostUsd: 28000, label: 'GH200 NVL32 (32x GH200)',              group: 'NVIDIA (pods)' },
+  'NVL72_B200':   { pflops: 162.0,   vram: 13824,  gpuCount: 72,   gpuCostUsd: 35000, label: 'GB200 NVL72 (72x B200)',               group: 'NVIDIA (pods)' },
+  'H100_SuperPOD':{ pflops: 253.44,  vram: 20480,  gpuCount: 256,  gpuCostUsd: 25000, label: 'DGX H100 SuperPOD (32 DGX, 256x H100)', group: 'NVIDIA (pods)' },
+  'A100_SuperPOD':{ pflops: 349.44,  vram: 89600,  gpuCount: 1120, gpuCostUsd: 7000,  label: 'DGX A100 SuperPOD (140 DGX, 1120x A100 80GB)', group: 'NVIDIA (pods)' },
   // Chinese sub-CCC nodes
-  '49xAscend910B':{ pflops: 15.68, vram: 3136, label: '49x Ascend 910B',      group: 'Chinese (sub-CCC)' },
-  '26xAscend910C':{ pflops: 15.60, vram: 3328, label: '26x Ascend 910C',      group: 'Chinese (sub-CCC)' },
+  '49xAscend910B':{ pflops: 15.68, vram: 3136, gpuCount: 49,   gpuCostUsd: 16000, label: '49x Ascend 910B',      group: 'Chinese (sub-CCC)' },
+  '26xAscend910C':{ pflops: 15.60, vram: 3328, gpuCount: 26,   gpuCostUsd: 26000, label: '26x Ascend 910C',      group: 'Chinese (sub-CCC)' },
   // Chinese pods
-  'CM384':        { pflops: 230.4,   vram: 49152,  label: 'CloudMatrix 384 (384x Ascend 910C)',   group: 'Chinese (pods)' },
+  'CM384':        { pflops: 230.4,   vram: 49152,  gpuCount: 384,  gpuCostUsd: 26000, label: 'CloudMatrix 384 (384x Ascend 910C)',   group: 'Chinese (pods)' },
   // Google TPUs (BF16 TFLOPS as FP16-equivalent)
-  '57xTPUv4':     { pflops: 15.68, vram: 1824, label: '57x TPU v4',           group: 'Google TPU (sub-CCC)' },
-  '80xTPUv5e':    { pflops: 15.76, vram: 1280, label: '80x TPU v5e',          group: 'Google TPU (sub-CCC)' },
-  '34xTPUv5p':    { pflops: 15.61, vram: 3230, label: '34x TPU v5p',          group: 'Google TPU (sub-CCC)' },
-  '17xTPUv6e':    { pflops: 15.61, vram: 544,  label: '17x TPU v6e',          group: 'Google TPU (sub-CCC)' },
+  '57xTPUv4':     { pflops: 15.68, vram: 1824, gpuCount: 57,   gpuCostUsd: 12000, label: '57x TPU v4',           group: 'Google TPU (sub-CCC)' },
+  '80xTPUv5e':    { pflops: 15.76, vram: 1280, gpuCount: 80,   gpuCostUsd: 6000,  label: '80x TPU v5e',          group: 'Google TPU (sub-CCC)' },
+  '34xTPUv5p':    { pflops: 15.61, vram: 3230, gpuCount: 34,   gpuCostUsd: 20000, label: '34x TPU v5p',          group: 'Google TPU (sub-CCC)' },
+  '17xTPUv6e':    { pflops: 15.61, vram: 544,  gpuCount: 17,   gpuCostUsd: 25000, label: '17x TPU v6e',          group: 'Google TPU (sub-CCC)' },
   // Google TPU pods (single-ICI scale-up)
-  'PodTPUv4':     { pflops: 1126.4,  vram: 131072, label: 'TPU v4 pod (4,096 chips)',              group: 'Google TPU (pods)' },
-  'PodTPUv5e':    { pflops: 50.43,   vram: 4096,   label: 'TPU v5e pod (256 chips)',               group: 'Google TPU (pods)' },
-  'PodTPUv5p':    { pflops: 4112.64, vram: 851200, label: 'TPU v5p pod (8,960 chips)',             group: 'Google TPU (pods)' },
-  'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
+  'PodTPUv4':     { pflops: 1126.4,  vram: 131072, gpuCount: 4096, gpuCostUsd: 12000, label: 'TPU v4 pod (4,096 chips)',              group: 'Google TPU (pods)' },
+  'PodTPUv5e':    { pflops: 50.43,   vram: 4096,   gpuCount: 256,  gpuCostUsd: 6000,  label: 'TPU v5e pod (256 chips)',               group: 'Google TPU (pods)' },
+  'PodTPUv5p':    { pflops: 4112.64, vram: 851200, gpuCount: 8960, gpuCostUsd: 20000, label: 'TPU v5p pod (8,960 chips)',             group: 'Google TPU (pods)' },
+  'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   gpuCount: 256,  gpuCostUsd: 25000, label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
 }
 
 const Tooltip = ({ text }: { text: string }) => (
@@ -207,8 +211,16 @@ function App() {
   const [precision, setPrecision] = useState('FP16')
   const [streamingEnabled, setStreamingEnabled] = useState(true)
 
-  // Straggler Mitigation
-  const [stragglerStrategy, setStragglerStrategy] = useState('none') // none, threshold, redundancy
+  // Hardware Failures & Straggler Mitigation
+  const [mitigation, setMitigation] = useState('relay') // see MITIGATION_STRATEGIES
+  const [gpusPerNode, setGpusPerNode] = useState(16)     // GPUs per node (for cluster failure rate & cost)
+  const [gpuCostUsd, setGpuCostUsd] = useState(25000)    // $/GPU (for mitigation cost)
+  const [failureRate, setFailureRate] = useState(2.0e-5) // per-GPU-hour (1/50,000 GPU-h)
+  const [recoveryTimeS, setRecoveryTimeS] = useState(600)
+  const [checkpointMode, setCheckpointMode] = useState('async') // sync | async | gpu_memory
+  const [slowFraction, setSlowFraction] = useState(0.10)
+  const [slowSeverity, setSlowSeverity] = useState(0.60)
+  const [backupFraction, setBackupFraction] = useState(0.05)
 
   // Maximum Training Duration
   const [showMaxDuration, setShowMaxDuration] = useState(false)
@@ -223,7 +235,7 @@ function App() {
 
   useEffect(() => {
     calculate()
-  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthUpMbps, bandwidthDownMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, stragglerStrategy, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue, precision, errorFeedback])
+  }, [parameters, tokens, numNodes, pflopsPerNode, vramPerNode, bandwidthUpMbps, bandwidthDownMbps, latencyMs, mfu, innerSteps, compression, localBatch, ppCompression, microBatches, useHierarchy, nodesPerGroup, regionalBandwidth, regionalLatency, regionalSteps, hwGrowth, swGrowth, investGrowth, mitigation, gpusPerNode, gpuCostUsd, failureRate, recoveryTimeS, checkpointMode, slowFraction, slowSeverity, backupFraction, streamingEnabled, isMoE, activeParams, moeLayers, expertParallelism, manualMaxDays, manualMaxDaysValue, precision, errorFeedback])
 
   const calculate = () => {
     // 1. Memory Analysis
@@ -241,8 +253,9 @@ function App() {
     const isSharded = memoryBytes > (vramPerNode * 1e9)
     const ppStages = Math.ceil(memoryBytes / (vramPerNode * 1e9))
     
-    // 2. Resource Adjustments (e.g. Redundancy / Backup Workers)
-    const effectiveNodes = stragglerStrategy === 'redundancy' ? numNodes / 1.1 : numNodes
+    // 2. Resource adjustments — backup workers add SPARE hardware (charged via cost),
+    //    not fewer compute nodes; failure absorption is modeled in goodput (rel.u).
+    const effectiveNodes = numNodes
 
     // 3. Compute Time
     // Compute depends on ACTIVE parameters for MoE
@@ -270,19 +283,14 @@ function App() {
     
     // Alpha reduces slightly for larger models (more robust)
     const baseAlpha = 0.08 * (1 / (1 + Math.log10(parameters / 1e9) / 5))
-    // Strategy: Threshold aggregation is faster but less efficient per token (staleness)
-    const strategyPenalty = stragglerStrategy === 'threshold' ? 1.15 : 1.0
-    const etaH = Math.max(0.4, (1 - baseAlpha * Math.log10(effectiveH)) / strategyPenalty)
+    const etaH = Math.max(0.4, 1 - baseAlpha * Math.log10(effectiveH))
     const etaCompression = compressionQuality(compression, errorFeedback)
     // etaReplicas is computed after mode determination (PP-Group uses numGroups, not effectiveNodes)
-    
-    // 5. Straggler & Congestion Penalty
-    const getStragglerFactor = (n: number) => {
-      const base = 1 + 0.05 * Math.log2(n)
-      if (stragglerStrategy === 'threshold') return 1.0 // Clipped entirely
-      if (stragglerStrategy === 'redundancy') return 1 + (base - 1) * 0.3 // Significantly reduced
-      return base
-    }
+
+    // 5. Straggler sync-tail (mode-aware; mirrors reliability_model f_tail).
+    //    Mitigation quality penalty (eta_mit) and goodput (u) are applied below via `rel`.
+    const getStragglerFactor = (n: number) =>
+      stragglerFactor(n, mitigation, slowFraction, slowSeverity)
     
     let totalTimeSeconds = 0
     let mode = isMoE ? "MoE" : "Data Parallel (DiLoCo)"
@@ -378,14 +386,24 @@ function App() {
     const replicaLossMult = replicaLossMultiplier(replicaCount, parameters / 1e9)
     const algorithmicEfficiency = etaH * etaCompression
 
+    // Reliability model: goodput (u), mitigation quality penalty (eta_mit), hardware cost.
+    // Run length for failure accounting ~ the compute-bound wall-clock (avoids circularity).
+    const rel = reliabilityModel({
+      nNodes: numNodes, gpuCount: gpusPerNode, timeSeconds: totalTimeSeconds,
+      params: parameters, bytesPerParam, vramGb: vramPerNode, mode: mitigation,
+      tailN: isSharded ? Math.max(1, numPPGroupsForReplica) : effectiveNodes,
+      failureRate, recoveryTimeS, checkpointMode, slowFraction, slowSeverity, backupFraction,
+    })
+
     // Activation compression quality penalty (only for PP mode)
     const etaActivation = isSharded ? activationCompressionQualityFn(ppCompression, ppStages) : 1.0
-    const totalEfficiency = algorithmicEfficiency * etaActivation
+    const totalEfficiency = algorithmicEfficiency * etaActivation * rel.etaMit
 
-    // Effective compute time accounts for algorithmic penalty
+    // Effective compute time accounts for algorithmic penalty AND goodput (failures/downtime)
     const totalTimeDays = totalTimeSeconds / (24 * 3600)
-    const effectiveDays = totalTimeDays / totalEfficiency
+    const effectiveDays = totalTimeDays / totalEfficiency / Math.max(1e-6, rel.u)
     const effectiveSeconds = effectiveDays * 24 * 3600
+    const costUsd = numNodes * gpusPerNode * gpuCostUsd * rel.costMult
 
     // Global Utilization Metrics (End-to-End)
     // Theoretical FLOPs = 6 * parameters * tokens
@@ -446,6 +464,18 @@ function App() {
       hardwareFlops: hardwareMaxFlops,
       localEquivFlops: theoreticalFlops,
       cQuality,
+      // Reliability / hardware-failure metrics
+      mitigation: rel.mitigation,
+      goodput: (rel.u * 100).toFixed(1),
+      timeInflation: rel.timeInflation.toFixed(2),
+      gpuHoursWasted: rel.gpuHoursWasted,
+      mtbfHours: rel.mtbfHours,
+      clusterFailuresPerDay: rel.clusterFailuresPerDay.toFixed(1),
+      expectedFailures: rel.expectedFailures.toFixed(0),
+      etaMit: (rel.etaMit * 100).toFixed(1),
+      costUsd,
+      costMult: rel.costMult,
+      gpuMemFeasible: rel.gpuMemCheckpointFeasible,
       maxDays: maxDays.toFixed(0),
       bottleneck: (globalCommSec + latencyPenaltySec) > computeBlockSec ? "Network" : "Compute",
       feasibility: effectiveDays < maxDays ? "Feasible" : `Impractical (>${maxDays.toFixed(0)} days)`
@@ -611,6 +641,8 @@ function App() {
                   const p = HARDWARE_PRESETS[key]
                   setPflopsPerNode(p.pflops)
                   setVramPerNode(p.vram)
+                  setGpusPerNode(p.gpuCount)
+                  setGpuCostUsd(p.gpuCostUsd)
                 }
               }}
               style={{ background: '#2a2a2a', color: '#e2e8f0', border: '1px solid #475569', padding: '6px 10px', borderRadius: '6px', fontSize: '0.9em' }}
@@ -795,17 +827,73 @@ function App() {
             />
             <span>x</span>
           </div>
+        </section>
+
+        <section>
+          <h3>Hardware Failures & Mitigation</h3>
           <div className="input-group">
-            <label>Straggler Mitigation: <Tooltip text="Strategies to prevent slow nodes from delaying the entire cluster." /></label>
-            <select 
-              value={stragglerStrategy} 
-              onChange={(e) => setStragglerStrategy(e.target.value)} 
-            >
-              <option value="none">None (Blocking)</option>
-              <option value="threshold">Threshold (90% cut-off)</option>
-              <option value="redundancy">Backup Workers (10% extra)</option>
+            <label>Mitigation Strategy: <Tooltip text="How the run copes with random hardware failures and slow nodes. 'none' = wait-for-all, no checkpoint (restart from scratch). 'relay'/'async' = non-blocking elastic. 'backup_workers' = spare hardware. 'checkpoint_elastic' = (a)sync checkpoint + rejoin. See Simulator_Documentation §5." /></label>
+            <select value={mitigation} onChange={(e) => setMitigation(e.target.value)}>
+              <option value="none">None (sync, no checkpoint)</option>
+              <option value="synchronous">Synchronous (checkpoint + full restart)</option>
+              <option value="threshold">Threshold / quorum (drop slowest k%)</option>
+              <option value="relay">Relay (async, elastic)</option>
+              <option value="async">Async / Decoupled DiLoCo</option>
+              <option value="backup_workers">Backup workers (spare hardware)</option>
+              <option value="checkpoint_elastic">Checkpoint + elastic recovery</option>
             </select>
             <span>Strategy</span>
+          </div>
+          <div className="input-group">
+            <label>GPUs per Node: <Tooltip text="GPUs per node. Cluster failure rate scales with total GPUs = nodes × GPUs/node." /></label>
+            <input type="number" min="1" max="1024" step="1" value={gpusPerNode}
+              onChange={(e) => { setGpusPerNode(Number(e.target.value)); setHwPreset('custom') }} />
+            <span>GPUs</span>
+          </div>
+          <div className="input-group">
+            <label>Failure Rate: <Tooltip text="Per-GPU hardware failure rate (failures per GPU-hour). Default 2e-5 = 1 per 50,000 GPU-hours (Meta Llama 3 / Epoch AI)." /></label>
+            <input type="number" min="0" max="0.1" step="0.00001" value={failureRate}
+              onChange={(e) => setFailureRate(Number(e.target.value))} />
+            <span>/GPU-h</span>
+          </div>
+          <div className="input-group">
+            <label>Recovery Time: <Tooltip text="Wall-clock seconds to detect, restart and reload a failed node (cold spare ~600s; warm/elastic far less)." /></label>
+            <input type="number" min="0" max="86400" step="10" value={recoveryTimeS}
+              onChange={(e) => setRecoveryTimeS(Number(e.target.value))} />
+            <span>s</span>
+          </div>
+          <div className="input-group">
+            <label>Checkpoint Mode: <Tooltip text="sync = blocking writes (up to 43% slowdown); async = overlapped (~98% hidden); gpu_memory = peer-GPU replicas (Epoch AI), needs free HBM — disabled when the model fills VRAM." /></label>
+            <select value={checkpointMode} onChange={(e) => setCheckpointMode(e.target.value)}>
+              <option value="sync">Synchronous (blocking)</option>
+              <option value="async">Asynchronous (overlapped)</option>
+              <option value="gpu_memory">GPU-memory (peer replicas)</option>
+            </select>
+            <span>Mode</span>
+          </div>
+          <div className="input-group">
+            <label>Fail-slow Fraction: <Tooltip text="Fraction of nodes that are persistently slow (ByteDance trace). Drives the synchronous straggler tail." /></label>
+            <input type="number" min="0" max="1" step="0.01" value={slowFraction}
+              onChange={(e) => setSlowFraction(Number(e.target.value))} />
+            <span>frac</span>
+          </div>
+          <div className="input-group">
+            <label>Fail-slow Severity: <Tooltip text="Speed of a fail-slow node as a fraction of normal (0.6 = runs at 60% speed)." /></label>
+            <input type="number" min="0.05" max="1" step="0.05" value={slowSeverity}
+              onChange={(e) => setSlowSeverity(Number(e.target.value))} />
+            <span>×speed</span>
+          </div>
+          <div className="input-group">
+            <label>Backup Overprovision: <Tooltip text="Spare-node fraction for the 'backup workers' strategy (extra hardware cost; absorbs simultaneous failures)." /></label>
+            <input type="number" min="0" max="0.5" step="0.01" value={backupFraction}
+              onChange={(e) => setBackupFraction(Number(e.target.value))} />
+            <span>frac</span>
+          </div>
+          <div className="input-group">
+            <label>GPU Cost: <Tooltip text="Capital cost per GPU, used to price the mitigation's extra hardware." /></label>
+            <input type="number" min="0" max="100000" step="1000" value={gpuCostUsd}
+              onChange={(e) => { setGpuCostUsd(Number(e.target.value)); setHwPreset('custom') }} />
+            <span>$/GPU</span>
           </div>
         </section>
 
@@ -969,6 +1057,31 @@ function App() {
                 <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#38bdf8' }}>
                   {formatFlops(results.cQuality)} FLOP
                 </p>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '20px', padding: '15px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155' }}>
+              <p style={{ color: '#94a3b8', margin: '0 0 10px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Hardware Failures & Mitigation ({results.mitigation})
+                <Tooltip text="Goodput = fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead. Time inflation = 1/goodput. Cost includes any extra hardware for the mitigation." />
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', fontSize: '0.9em' }}>
+                <div><span style={{ color: '#94a3b8' }}>Goodput</span><br/>
+                  <strong style={{ color: Number(results.goodput) < 50 ? '#f43f5e' : Number(results.goodput) < 90 ? '#fbbf24' : '#10b981' }}>{results.goodput}%</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Time inflation</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{results.timeInflation}×</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Cluster MTBF</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{isFinite(results.mtbfHours) ? `${results.mtbfHours.toFixed(1)} h` : '—'}</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Expected failures</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{results.expectedFailures}</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>GPU-hours wasted</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{formatFlops(results.gpuHoursWasted).replace(' FLOP','')}</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Quality penalty</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{results.etaMit}%</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Hardware cost</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>${(results.costUsd / 1e6).toFixed(1)}M{results.costMult > 1 ? ` (+${((results.costMult - 1) * 100).toFixed(0)}%)` : ''}</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>GPU-mem ckpt</span><br/>
+                  <strong style={{ color: results.gpuMemFeasible ? '#10b981' : '#f43f5e' }}>{results.gpuMemFeasible ? 'feasible' : 'no spare HBM'}</strong></div>
               </div>
             </div>
 
