@@ -6,7 +6,9 @@ quality-adjusted FLOP (C_quality) using sub-CCC nodes over WAN, comparing:
   - Before: CCC defined by compute threshold only (>16 H100-equivalents)
   - After:  CCC defined by compute OR memory threshold (>1,280 GB accelerator memory)
 
-Uses early-2026 GPU prices and the evasion_calculator infrastructure.
+Uses early-2026 GPU prices and the evasion_calculator infrastructure. All costs
+are full system acquisition costs (chip price × 1.64 server × 1.23 cluster,
+Cottier et al. 2024); see Simulator_Documentation.md §7.
 """
 
 import math
@@ -19,8 +21,11 @@ if sys.platform == "win32":
 
 from evasion_calculator import (
     find_optimal_config_for_target,
-    COMPRESSION, BW_BPS, LATENCY_S,
+    CHIP_TO_SERVER, SERVER_TO_CLUSTER,
 )
+# NOTE: BW_BPS / LATENCY_S / COMPRESSION were imported here but unused; BW_BPS no
+# longer exists after the asymmetric-bandwidth refactor (BW_UP_BPS / BW_DOWN_BPS),
+# which broke this script's import. Defaults are taken inside evasion_calculator.
 
 # ── GPU hardware definitions (early 2026 prices) ────────────────────────────
 
@@ -59,13 +64,13 @@ GPUS = {
     "Ascend 910B": {
         "hbm_gb": 64,          # 64 GB HBM2e (published)
         "fp16_tflops": 320,    # published
-        "fp8_tflops": 640,     # published
+        "fp8_tflops": None,    # no public evidence of FP8 support
         "price_usd": 16_000,   # ¥110,000 (~$16k)
     },
     "Ascend 910C": {
         "hbm_gb": 128,         # est. from benchmarks
         "fp16_tflops": 600,    # est. from benchmarks
-        "fp8_tflops": 1_200,   # est.
+        "fp8_tflops": None,    # no public evidence of FP8 support
         "price_usd": 26_000,   # ¥180,000 (~$26k)
     },
     # Google TPUs (BF16 TFLOPS treated as FP16-equivalent;
@@ -207,6 +212,9 @@ def main():
 
     # ── Table 0: Node configurations ──────────────────────────────────────
     print("\n── Sub-CCC Node Configurations ─────────────────────────────────────")
+    print(f"  All costs are system acquisition cost: chip price x {CHIP_TO_SERVER} (server) "
+          f"x {SERVER_TO_CLUSTER} (cluster) = {CHIP_TO_SERVER * SERVER_TO_CLUSTER:.2f}x chip cost "
+          f"(Cottier et al. 2024).")
     for regime_label, with_mem in [("BEFORE memory limit (compute threshold only)",  False),
                                     ("AFTER memory limit (compute + memory ≤ 1,280 GB)", True)]:
         print(f"\n  {regime_label}:")
@@ -217,7 +225,9 @@ def main():
         configs = build_configs_for_regime(with_mem)
         for gpu_name, cfg, n_gpus, max_model_b in configs:
             prec = "FP8" if "bytes_per_param" in cfg and cfg["bytes_per_param"] == 14 else "FP16"
-            node_cost = n_gpus * GPUS[gpu_name]["price_usd"]
+            # System cost, consistent with the cost_usd reported in the tables below
+            node_cost = (n_gpus * GPUS[gpu_name]["price_usd"]
+                         * CHIP_TO_SERVER * SERVER_TO_CLUSTER)
             print(f"  {gpu_name:>12} | {n_gpus:>4} | {cfg['vram_gb']:>5} GB | "
                   f"{cfg['h100_equiv']:>7.1f} | {cfg['pflops']:>6.2f}  | "
                   f"{prec:>9} | {max_model_b:>6.0f}B  | {format_cost(node_cost):>10}")

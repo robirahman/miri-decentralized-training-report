@@ -647,11 +647,34 @@ $$\text{HFU} = \frac{\text{Global MFU}}{0.8}$$
 
 ---
 
-## 7. Maximum Training Run Duration
+## 7. Hardware Cost Estimate
+
+The simulator estimates total hardware acquisition cost using the formula adapted from [Cottier et al. (2024), "The rising costs of training frontier AI models"](https://arxiv.org/abs/2405.21015):
+
+$$C_{\text{hardware}} = P_{\text{chip}} \times N_{\text{chips}} \times f_{\text{server}} \times f_{\text{cluster}}$$
+
+| Factor | Value | Description |
+| :--- | :--- | :--- |
+| $P_{\text{chip}}$ | varies | Per-chip purchase price (current market, not amortized) |
+| $N_{\text{chips}}$ | varies | Total chips across all nodes ($N_{\text{nodes}} \times \text{chips per node}$) |
+| $f_{\text{server}}$ | 1.64 | Chip-to-server overhead: CPUs, memory, intra-server networking, server markup |
+| $f_{\text{cluster}}$ | 1.23 | Server-to-cluster overhead: inter-server networking (cluster interconnect) |
+
+The combined multiplier is $1.64 \times 1.23 = 2.02\times$, meaning total system cost is roughly double the bare chip cost. Cottier et al. derive these factors from a survey of published server and cluster cost breakdowns: server components (CPUs, DRAM, NVLink/NVSwitch) add 54–69% over the GPU-only cost (mean 64%), and cluster-level networking adds ~19% of total cluster CapEx, giving a 23% markup at the cluster level.
+
+**Scope:** This estimate covers hardware acquisition only — chips, servers, and networking equipment. It excludes power consumption, data center construction, cooling, labor, and development compute (experimental runs preceding the final training run).
+
+**Chip prices:** The simulator uses current sale prices (early 2026 estimates) rather than release-date prices depreciated over time. This avoids the need for an amortization model but means cost estimates reflect current market conditions, not historical acquisition cost.
+
+**Where applied:** Every cost figure the project reports uses these multipliers — `evasion_calculator.py`, `ccc_cost_analysis.py`, `compare_memory_limit.py`, the generated paper tables, and the web simulator (`CHIP_TO_SERVER` / `SERVER_TO_CLUSTER` in `App.tsx`). Where a mitigation strategy requires redundant hardware (e.g. backup workers), the reliability model's `cost_mult` multiplies on top: $C = P_{\text{chip}} N_{\text{chips}} f_{\text{server}} f_{\text{cluster}} \times \text{cost\_mult}$.
+
+---
+
+## 8. Maximum Training Run Duration
 
 Based on [Epoch AI's "The Longest Training Run" analysis](https://epoch.ai/blog/the-longest-training-run).
 
-### 7.1 Formula
+### 8.1 Formula
 
 $$L = \frac{1}{(g_H + g_S + g_I) \cdot \ln(10)} \text{ years}$$
 
@@ -661,7 +684,7 @@ $$L = \frac{1}{(g_H + g_S + g_I) \cdot \ln(10)} \text{ years}$$
 
 **Interpretation:** If technology and budgets are improving at combined rate $g$ (OOM/year), then any training run longer than $L$ years would be better served by waiting for improved conditions and running a shorter, more efficient job. The $\ln(10)$ conversion is required because the Epoch AI derivation uses natural-log growth rates internally while the simulator stores rates in $\log_{10}$ (OOM/year) units.
 
-### 7.2 Default Growth Rates
+### 8.2 Default Growth Rates
 
 | Factor | Default (×/yr) | OOM/yr | Source |
 | :--- | :--- | :--- | :--- |
@@ -675,9 +698,9 @@ $$L = \frac{1}{(g_H + g_S + g_I) \cdot \ln(10)} \text{ years}$$
 
 ---
 
-## 8. Precision & Compression
+## 9. Precision & Compression
 
-### 8.1 Precision Effect on Communication
+### 9.1 Precision Effect on Communication
 
 Lower compute precision reduces communication volume for both pseudo-gradients (Section 3.1) and pipeline activations (Section 3.3). The $B_{\text{precision}}$ parameter in those formulas is determined by the precision setting:
 
@@ -689,7 +712,7 @@ Lower compute precision reduces communication volume for both pseudo-gradients (
 
 This precision-based reduction is **independent of** the user-specified compression ratio $C_r$. The total effective compression from FP16 baseline is $(16 / B_{\text{precision}}) \times C_r$.
 
-### 8.2 Additional Compression
+### 9.2 Additional Compression
 
 On top of precision, the user can apply further compression via quantization and sparsification of pseudo-gradients. A compression ratio of 16× corresponds to, e.g., 4-bit quantization (4× from FP16) combined with 25% sparsification (4×), with error-feedback accumulation to minimize accuracy loss.
 
@@ -699,7 +722,7 @@ On top of precision, the user can apply further compression via quantization and
 
 ---
 
-## 9. Variables Reference Table
+## 10. Variables Reference Table
 
 | Variable | Unit | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -727,10 +750,13 @@ On top of precision, the user can apply further compression via quantization and
 | `chinchillaTokensPerParam` | Float | 25.6 | Chinchilla-optimal tokens-per-parameter ratio ($D^*/N$). From Besiroglu et al. (2024). |
 | `PP_BW_BPS` | bps | $10^9$ (1 Gbps) | Bandwidth for intra-group PP communication (regional interconnect). |
 | `PP_LATENCY_S` | seconds | 0.020 (20 ms) | Round-trip latency for intra-group PP communication (regional interconnect). |
+| `CHIP_TO_SERVER` | Factor | 1.64 | Server overhead multiplier: CPUs, memory, intra-server networking, markup (§7). |
+| `SERVER_TO_CLUSTER` | Factor | 1.23 | Cluster overhead multiplier: inter-server networking/interconnect (§7). |
+| `gpu_cost_usd` | USD | varies | Per-chip purchase price at current market rates. See hardware presets in code. |
 
 ---
 
-## 10. Known Limitations & Future Work
+## 11. Known Limitations & Future Work
 
 1.  **PP-Group DiLoCo assumes homogeneous groups.** All PP groups are assumed to have equal compute power and interconnect. In practice, heterogeneous node capabilities would cause some groups to be faster than others, increasing the straggler penalty at the DiLoCo sync boundary.
 2.  **Streaming DiLoCo memory overhead:** The simulator does not model the ~66% additional memory requirement for Streaming DiLoCo (original weights buffer + outer optimizer state). This could trigger sharding in cases the simulator currently classifies as data-parallel.

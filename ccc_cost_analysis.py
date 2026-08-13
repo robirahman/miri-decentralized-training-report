@@ -5,6 +5,10 @@ and proposed (memory-amended) CCC rules.
 Uses the evasion_calculator simulator formulas. Computes η as throughput
 efficiency (η_H × η_compression), matching the documented simulator outputs.
 The replica divergence penalty is reported separately via η_chinchilla.
+
+Costs are full system acquisition costs: chip price × Cottier et al. (2024)
+chip-to-server and server-to-cluster multipliers (2.02× combined), matching
+evasion_calculator.py. See Simulator_Documentation.md §7.
 """
 import math
 import sys
@@ -16,13 +20,12 @@ try:
 except (AttributeError, ValueError):
     pass
 
-sys.path.insert(0, "/mnt/chromeos/MyFiles/Documents/MIRI decentralized training report")
 from evasion_calculator import (
     straggler_factor, reliability_model, efficiency, alpha, compression_quality,
     replica_loss_multiplier, chinchilla_efficiency, chinchilla_loss,
     COMPRESSION, BYTES_PER_PARAM, BITS_PER_PSEUDO_GRAD,
     BW_UP_BPS, BW_DOWN_BPS, LATENCY_S, MFU, LOCAL_BATCH, TIME_SECONDS,
-    CHINCHILLA_TOKENS_PER_PARAM,
+    CHINCHILLA_TOKENS_PER_PARAM, CHIP_TO_SERVER, SERVER_TO_CLUSTER,
 )
 
 # ── Hardware configurations ───────────────────────────────────────────────────
@@ -169,7 +172,10 @@ def compute(cfg, n_nodes, compression=COMPRESSION, scenario="expected"):
         eta_chin = 1.0
     c_quality = c_local * eta_chin
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    # System acquisition cost: chips × Cottier et al. (2024) server/cluster
+    # multipliers × any mitigation redundancy (matches evasion_calculator.py)
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     return {
         "n_nodes": n_nodes,
@@ -264,6 +270,10 @@ def print_rule_analysis(rule_name, configs):
         precision = "FP8" if bpp < 16 else "FP16"
         print(f"  {name:>25}: {cfg['pflops']:>6.2f} PFLOPS ({precision}), {cfg['vram_gb']:>5,} GB, "
               f"{cfg['h100_equiv']:>5.1f} H100-eq, ${cfg['gpu_cost_usd']:>6,}/GPU, max model {max_model:>5.0f}B")
+
+    print(f"\n  Costs below are full system acquisition cost: chip price x {CHIP_TO_SERVER} "
+          f"(server) x {SERVER_TO_CLUSTER} (cluster) = {CHIP_TO_SERVER * SERVER_TO_CLUSTER:.2f}x "
+          f"chip cost, per Cottier et al. (2024). The $/GPU column is system cost per GPU.")
 
     all_results = {}  # target -> [(name, result)]
 

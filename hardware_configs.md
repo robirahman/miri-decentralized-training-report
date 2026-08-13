@@ -37,20 +37,19 @@ FP8 variants of the same physical nodes. CCC threshold is computed from FP16 cap
 |:--|--:|--:|--:|--:|--:|
 | 16× H100 FP8         | 16 | 31.68 | 15.84 | 1,280 | $25,000 |
 | 16× GH200 FP8        | 16 | 31.68 | 15.84 | 2,304 | $28,000 |
-| 49× Ascend 910B FP8  | 49 | 31.36 | 15.68 | 3,136 | $16,000 |
-| 26× Ascend 910C FP8  | 26 | 31.20 | 15.60 | 3,328 | $26,000 |
 | 17× TPU v6e FP8      | 17 | 31.21 | 15.61 | 544   | $25,000 |
 
 **Per-GPU FP8 throughput assumptions:**
 - H100 / GH200: 1,980 TFLOPS FP8
-- Ascend 910B: 640 TFLOPS FP8; Ascend 910C: 1,200 TFLOPS FP8 (est.)
 - TPU v6e: 1,836 TFLOPS FP8
+
+**Accelerators with no FP8 entry:** A100 (Ampere, no FP8 datapath), Ascend 910B and 910C (no public evidence of FP8 support), and TPU v4/v5e/v5p (INT8 only). These appear in `CONFIGS` at FP16/BF16 only. The web simulator enforces the same restriction via the `fp8` flag on each hardware preset, which disables the sub-FP16 precision options.
 
 **Shared FP8 parameters:**
 - `bytes_per_param`: 14
 - `bits_per_pseudo_grad`: 8
 
-Source: `evasion_calculator.py` lines 14–80 (CONFIGS) and 122–175 (CONFIGS_FP8).
+Source: the `CONFIGS` and `CONFIGS_FP8` dicts in `evasion_calculator.py`.
 
 ## Pod / Rack Presets (Web Simulator Only)
 

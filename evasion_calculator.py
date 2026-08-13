@@ -147,6 +147,10 @@ _BACKUP_TAIL_FACTOR = 0.30   # backup workers drop most of the tail (legacy "red
 TIME_YEARS = 1.5
 TIME_SECONDS = TIME_YEARS * 365.25 * 86400  # 47,335,400 seconds
 
+# Hardware cost multipliers (Cottier et al. 2024, "The rising costs of training frontier AI models")
+CHIP_TO_SERVER = 1.64    # Server overhead: CPUs, memory, intra-server networking, markup
+SERVER_TO_CLUSTER = 1.23 # Cluster overhead: inter-server networking (interconnect)
+
 # Node sweep
 NODE_COUNTS = [1, 2, 4, 8, 16, 32, 72, 144, 500, 1000]
 NODE_COUNTS_LARGE = [500, 1000, 2000, 3000, 4000, 5000]
@@ -189,27 +193,8 @@ CONFIGS_FP8 = {
         "bytes_per_param": 14,           # FP8: 1+1+4+4+4 = 14 bytes
         "bits_per_pseudo_grad": 8,       # FP8 pseudo-gradients (8 bits)
     },
-    # Chinese chips with FP8 support (only available domestically in China)
-    "49x Ascend 910B FP8": {
-        "pflops": 49 * 640e12 / 1e15,   # 49 x 640 TFLOPS FP8 = 31.36 PFLOPS
-        "pflops_fp16": 49 * 320e12 / 1e15,
-        "vram_gb": 49 * 64,             # 3,136 GB HBM2e
-        "gpu_count": 49,
-        "gpu_cost_usd": 16_000,         # ¥110,000 (~$16k)
-        "h100_equiv": 49 * 320 / 990,
-        "bytes_per_param": 14,
-        "bits_per_pseudo_grad": 8,
-    },
-    "26x Ascend 910C FP8": {
-        "pflops": 26 * 1200e12 / 1e15,  # 26 x 1200 TFLOPS FP8 = 31.20 PFLOPS (est.)
-        "vram_gb": 26 * 128,            # 3,328 GB HBM (est.)
-        "pflops_fp16": 26 * 600e12 / 1e15,
-        "gpu_count": 26,
-        "gpu_cost_usd": 26_000,         # ¥180,000 (~$26k)
-        "h100_equiv": 26 * 600 / 990,
-        "bytes_per_param": 14,
-        "bits_per_pseudo_grad": 8,
-    },
+    # Ascend 910B and 910C omitted: no public evidence of FP8 support (FP16 entries
+    # remain in CONFIGS).
     # Google TPU v6e with FP8 support
     "17x TPU v6e FP8": {
         "pflops": 17 * 1836e12 / 1e15,  # 17 x 1836 TFLOPS FP8 = 31.21 PFLOPS
@@ -794,7 +779,8 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
     c_quality = c_local * chi
 
     # Cost
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     # Verify under CCC threshold
     h100_eq = cfg.get("h100_equiv", cfg.get("pflops_fp16", pflops) * 1000 / 990)
@@ -961,7 +947,8 @@ def compute_hierarchical_scenario(config_name, n_nodes, nodes_per_group=NODES_PE
     c_quality = c_local * chi
 
     # Cost
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     return {
         **_rel_fields(rel),
@@ -1088,7 +1075,8 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     return {
         **_rel_fields(rel),
@@ -1271,7 +1259,8 @@ def compute_pp_diloco_scenario(config_name, n_nodes, target_params_b,
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     return {
         **_rel_fields(rel),
@@ -1419,7 +1408,10 @@ def print_config_summary(config_name):
     print(f"  Peak FP16:    {cfg['pflops']:.2f} PFLOPS ({cfg['h100_equiv']:.1f} H100-equiv)")
     print(f"  VRAM:         {cfg['vram_gb']:,} GB")
     print(f"  Max model:    {max_b:.0f}B params (FP16 training)")
-    print(f"  GPU cost:     ${cfg['gpu_cost_usd']:,}/GPU x {cfg['gpu_count']} = ${cfg['gpu_count'] * cfg['gpu_cost_usd']:,.0f}/node")
+    chip_cost = cfg['gpu_count'] * cfg['gpu_cost_usd']
+    system_cost = chip_cost * CHIP_TO_SERVER * SERVER_TO_CLUSTER
+    print(f"  Chip cost:    ${cfg['gpu_cost_usd']:,}/chip x {cfg['gpu_count']} = ${chip_cost:,.0f}")
+    print(f"  System cost:  x {CHIP_TO_SERVER} server x {SERVER_TO_CLUSTER} cluster = ${system_cost:,.0f}/node")
     print(f"{'='*80}")
 
 
@@ -1880,7 +1872,8 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
     c_local = c_throughput * eta
     c_quality = c_local * chi
 
-    cost_usd = n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"] * rel["cost_mult"]
+    cost_usd = (n_nodes * cfg["gpu_count"] * cfg["gpu_cost_usd"]
+                * CHIP_TO_SERVER * SERVER_TO_CLUSTER * rel["cost_mult"])
 
     return {
         **_rel_fields(rel),
