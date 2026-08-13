@@ -93,34 +93,37 @@ function chinchillaEfficiency(params: number, tokens: number, cFlop: number,
 // gpuCount / gpuCostUsd drive the cluster failure rate and hardware cost in the
 // reliability panel; per-GPU costs match evasion_calculator.py CONFIGS (pod/rack
 // rows reuse the same per-accelerator price; B100/B200 are early-2026 estimates).
-const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; gpuCount: number; gpuCostUsd: number; label: string; group: string }> = {
-  'custom':       { pflops: 16,    vram: 2304, gpuCount: 16,   gpuCostUsd: 25000, label: 'Custom',               group: '' },
+// fp8 marks accelerators with published FP8 support, matching which entries exist
+// in evasion_calculator.py CONFIGS_FP8. Ampere (A100), Ascend 910B/910C, and TPU
+// v4/v5e/v5p have no public FP8 support (TPU v5e/v5p are INT8-only).
+const HARDWARE_PRESETS: Record<string, { pflops: number; vram: number; gpuCount: number; gpuCostUsd: number; fp8: boolean; label: string; group: string }> = {
+  'custom':       { pflops: 16,    vram: 2304, gpuCount: 16,   gpuCostUsd: 25000, fp8: true,  label: 'Custom',               group: '' },
   // NVIDIA sub-CCC nodes
-  '50xA100':      { pflops: 15.60, vram: 4000, gpuCount: 50,   gpuCostUsd: 7000,  label: '50x A100 80GB',        group: 'NVIDIA (sub-CCC)' },
-  '16xH100':      { pflops: 15.84, vram: 1280, gpuCount: 16,   gpuCostUsd: 25000, label: '16x H100 SXM',         group: 'NVIDIA (sub-CCC)' },
-  '16xGH200':     { pflops: 15.84, vram: 2304, gpuCount: 16,   gpuCostUsd: 28000, label: '16x GH200',            group: 'NVIDIA (sub-CCC)' },
-  '9xB100':       { pflops: 15.75, vram: 1728, gpuCount: 9,    gpuCostUsd: 30000, label: '9x B100',              group: 'NVIDIA (sub-CCC)' },
-  '7xB200':       { pflops: 15.75, vram: 1344, gpuCount: 7,    gpuCostUsd: 35000, label: '7x B200',              group: 'NVIDIA (sub-CCC)' },
+  '50xA100':      { pflops: 15.60, vram: 4000, gpuCount: 50,   gpuCostUsd: 7000,  fp8: false, label: '50x A100 80GB',        group: 'NVIDIA (sub-CCC)' },
+  '16xH100':      { pflops: 15.84, vram: 1280, gpuCount: 16,   gpuCostUsd: 25000, fp8: true,  label: '16x H100 SXM',         group: 'NVIDIA (sub-CCC)' },
+  '16xGH200':     { pflops: 15.84, vram: 2304, gpuCount: 16,   gpuCostUsd: 28000, fp8: true,  label: '16x GH200',            group: 'NVIDIA (sub-CCC)' },
+  '9xB100':       { pflops: 15.75, vram: 1728, gpuCount: 9,    gpuCostUsd: 30000, fp8: true,  label: '9x B100',              group: 'NVIDIA (sub-CCC)' },
+  '7xB200':       { pflops: 15.75, vram: 1344, gpuCount: 7,    gpuCostUsd: 35000, fp8: true,  label: '7x B200',              group: 'NVIDIA (sub-CCC)' },
   // NVIDIA pods / scale-up racks
-  'NVL32_GH200':  { pflops: 31.68,   vram: 4608,   gpuCount: 32,   gpuCostUsd: 28000, label: 'GH200 NVL32 (32x GH200)',              group: 'NVIDIA (pods)' },
-  'NVL72_B200':   { pflops: 162.0,   vram: 13824,  gpuCount: 72,   gpuCostUsd: 35000, label: 'GB200 NVL72 (72x B200)',               group: 'NVIDIA (pods)' },
-  'H100_SuperPOD':{ pflops: 253.44,  vram: 20480,  gpuCount: 256,  gpuCostUsd: 25000, label: 'DGX H100 SuperPOD (32 DGX, 256x H100)', group: 'NVIDIA (pods)' },
-  'A100_SuperPOD':{ pflops: 349.44,  vram: 89600,  gpuCount: 1120, gpuCostUsd: 7000,  label: 'DGX A100 SuperPOD (140 DGX, 1120x A100 80GB)', group: 'NVIDIA (pods)' },
+  'NVL32_GH200':  { pflops: 31.68,   vram: 4608,   gpuCount: 32,   gpuCostUsd: 28000, fp8: true,  label: 'GH200 NVL32 (32x GH200)',              group: 'NVIDIA (pods)' },
+  'NVL72_B200':   { pflops: 162.0,   vram: 13824,  gpuCount: 72,   gpuCostUsd: 35000, fp8: true,  label: 'GB200 NVL72 (72x B200)',               group: 'NVIDIA (pods)' },
+  'H100_SuperPOD':{ pflops: 253.44,  vram: 20480,  gpuCount: 256,  gpuCostUsd: 25000, fp8: true,  label: 'DGX H100 SuperPOD (32 DGX, 256x H100)', group: 'NVIDIA (pods)' },
+  'A100_SuperPOD':{ pflops: 349.44,  vram: 89600,  gpuCount: 1120, gpuCostUsd: 7000,  fp8: false, label: 'DGX A100 SuperPOD (140 DGX, 1120x A100 80GB)', group: 'NVIDIA (pods)' },
   // Chinese sub-CCC nodes
-  '49xAscend910B':{ pflops: 15.68, vram: 3136, gpuCount: 49,   gpuCostUsd: 16000, label: '49x Ascend 910B',      group: 'Chinese (sub-CCC)' },
-  '26xAscend910C':{ pflops: 15.60, vram: 3328, gpuCount: 26,   gpuCostUsd: 26000, label: '26x Ascend 910C',      group: 'Chinese (sub-CCC)' },
+  '49xAscend910B':{ pflops: 15.68, vram: 3136, gpuCount: 49,   gpuCostUsd: 16000, fp8: false, label: '49x Ascend 910B',      group: 'Chinese (sub-CCC)' },
+  '26xAscend910C':{ pflops: 15.60, vram: 3328, gpuCount: 26,   gpuCostUsd: 26000, fp8: false, label: '26x Ascend 910C',      group: 'Chinese (sub-CCC)' },
   // Chinese pods
-  'CM384':        { pflops: 230.4,   vram: 49152,  gpuCount: 384,  gpuCostUsd: 26000, label: 'CloudMatrix 384 (384x Ascend 910C)',   group: 'Chinese (pods)' },
+  'CM384':        { pflops: 230.4,   vram: 49152,  gpuCount: 384,  gpuCostUsd: 26000, fp8: false, label: 'CloudMatrix 384 (384x Ascend 910C)',   group: 'Chinese (pods)' },
   // Google TPUs (BF16 TFLOPS as FP16-equivalent)
-  '57xTPUv4':     { pflops: 15.68, vram: 1824, gpuCount: 57,   gpuCostUsd: 12000, label: '57x TPU v4',           group: 'Google TPU (sub-CCC)' },
-  '80xTPUv5e':    { pflops: 15.76, vram: 1280, gpuCount: 80,   gpuCostUsd: 6000,  label: '80x TPU v5e',          group: 'Google TPU (sub-CCC)' },
-  '34xTPUv5p':    { pflops: 15.61, vram: 3230, gpuCount: 34,   gpuCostUsd: 20000, label: '34x TPU v5p',          group: 'Google TPU (sub-CCC)' },
-  '17xTPUv6e':    { pflops: 15.61, vram: 544,  gpuCount: 17,   gpuCostUsd: 25000, label: '17x TPU v6e',          group: 'Google TPU (sub-CCC)' },
+  '57xTPUv4':     { pflops: 15.68, vram: 1824, gpuCount: 57,   gpuCostUsd: 12000, fp8: false, label: '57x TPU v4',           group: 'Google TPU (sub-CCC)' },
+  '80xTPUv5e':    { pflops: 15.76, vram: 1280, gpuCount: 80,   gpuCostUsd: 6000,  fp8: false, label: '80x TPU v5e',          group: 'Google TPU (sub-CCC)' },
+  '34xTPUv5p':    { pflops: 15.61, vram: 3230, gpuCount: 34,   gpuCostUsd: 20000, fp8: false, label: '34x TPU v5p',          group: 'Google TPU (sub-CCC)' },
+  '17xTPUv6e':    { pflops: 15.61, vram: 544,  gpuCount: 17,   gpuCostUsd: 25000, fp8: true,  label: '17x TPU v6e',          group: 'Google TPU (sub-CCC)' },
   // Google TPU pods (single-ICI scale-up)
-  'PodTPUv4':     { pflops: 1126.4,  vram: 131072, gpuCount: 4096, gpuCostUsd: 12000, label: 'TPU v4 pod (4,096 chips)',              group: 'Google TPU (pods)' },
-  'PodTPUv5e':    { pflops: 50.43,   vram: 4096,   gpuCount: 256,  gpuCostUsd: 6000,  label: 'TPU v5e pod (256 chips)',               group: 'Google TPU (pods)' },
-  'PodTPUv5p':    { pflops: 4112.64, vram: 851200, gpuCount: 8960, gpuCostUsd: 20000, label: 'TPU v5p pod (8,960 chips)',             group: 'Google TPU (pods)' },
-  'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   gpuCount: 256,  gpuCostUsd: 25000, label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
+  'PodTPUv4':     { pflops: 1126.4,  vram: 131072, gpuCount: 4096, gpuCostUsd: 12000, fp8: false, label: 'TPU v4 pod (4,096 chips)',              group: 'Google TPU (pods)' },
+  'PodTPUv5e':    { pflops: 50.43,   vram: 4096,   gpuCount: 256,  gpuCostUsd: 6000,  fp8: false, label: 'TPU v5e pod (256 chips)',               group: 'Google TPU (pods)' },
+  'PodTPUv5p':    { pflops: 4112.64, vram: 851200, gpuCount: 8960, gpuCostUsd: 20000, fp8: false, label: 'TPU v5p pod (8,960 chips)',             group: 'Google TPU (pods)' },
+  'PodTPUv6e':    { pflops: 235.01,  vram: 8192,   gpuCount: 256,  gpuCostUsd: 25000, fp8: true,  label: 'TPU v6e pod (256 chips)',               group: 'Google TPU (pods)' },
 }
 
 // Hardware cost multipliers (Cottier et al. 2024, "The rising costs of training frontier AI models")
@@ -214,6 +217,9 @@ function App() {
   const [microBatches, setMicroBatches] = useState(8)
   const [precision, setPrecision] = useState('FP16')
   const [streamingEnabled, setStreamingEnabled] = useState(true)
+
+  // Whether the selected accelerator has published FP8 support (custom = unconstrained)
+  const fp8Supported = HARDWARE_PRESETS[hwPreset]?.fp8 ?? true
 
   // Hardware Failures & Straggler Mitigation
   const [mitigation, setMitigation] = useState('relay') // see MITIGATION_STRATEGIES
@@ -648,6 +654,8 @@ function App() {
                   setVramPerNode(p.vram)
                   setGpusPerNode(p.gpuCount)
                   setGpuCostUsd(p.gpuCostUsd)
+                  // Fall back to FP16 if the selected accelerator has no FP8 support
+                  if (!p.fp8 && precision !== 'FP16') setPrecision('FP16')
                 }
               }}
               style={{ background: '#2a2a2a', color: '#e2e8f0', border: '1px solid #475569', padding: '6px 10px', borderRadius: '6px', fontSize: '0.9em' }}
@@ -770,14 +778,19 @@ function App() {
         <section>
           <h3>Algorithm Settings</h3>
           <div className="input-group">
-            <label>Precision: <Tooltip text="The numeric format used for training. Lower precision reduces bandwidth but can impact stability." /></label>
+            <label>Precision: <Tooltip text="The numeric format used for training. Lower precision reduces bandwidth but can impact stability. Sub-FP16 formats are only selectable on accelerators with published FP8 support — A100, Ascend 910B/910C, and TPU v4/v5e/v5p have none (TPU v5e/v5p are INT8-only)." /></label>
             <select value={precision} onChange={(e) => setPrecision(e.target.value)}>
               <option value="FP16">FP16 / BF16 (2 bytes)</option>
-              <option value="FP8">FP8 (1 byte)</option>
-              <option value="FP4">FP4 (0.5 byte)</option>
+              <option value="FP8" disabled={!fp8Supported}>FP8 (1 byte){fp8Supported ? '' : ' — not supported'}</option>
+              <option value="FP4" disabled={!fp8Supported}>FP4 (0.5 byte){fp8Supported ? '' : ' — not supported'}</option>
             </select>
             <span>Precision</span>
           </div>
+          {!fp8Supported && (
+            <p style={{ margin: '-6px 0 10px 0', fontSize: '0.78em', color: '#fbbf24' }}>
+              {HARDWARE_PRESETS[hwPreset]?.label ?? 'This accelerator'} has no published FP8 support — training is modeled at FP16/BF16.
+            </p>
+          )}
           <div className="input-group">
             <label>Streaming DiLoCo: <Tooltip text="Overlap synchronization with the next compute block. Hides network latency if compute time > sync time." /></label>
             <input 
@@ -1035,7 +1048,7 @@ function App() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', marginTop: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '20px', marginTop: '20px' }}>
               <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                 <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Hardware FLOPs Performed
@@ -1063,12 +1076,22 @@ function App() {
                   {formatFlops(results.cQuality)} FLOP
                 </p>
               </div>
+              <div style={{ background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
+                <p style={{ color: '#94a3b8', margin: '0 0 4px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Estimated Hardware Cost
+                  <Tooltip text="Hardware acquisition cost = chips × chip price × 1.64 (server overhead) × 1.23 (cluster networking), times any mitigation redundancy. Adapted from Cottier et al. (2024). Excludes power, data center construction, cooling, labor, and development compute." />
+                </p>
+                <p style={{ margin: 0, fontSize: '1.1em', fontWeight: 600, color: '#e2e8f0' }}>
+                  {results.costUsd >= 1e9 ? `$${(results.costUsd / 1e9).toFixed(2)}B` : `$${(results.costUsd / 1e6).toFixed(1)}M`}
+                  {results.costMult > 1 ? <span style={{ color: '#94a3b8', fontSize: '0.85em', fontWeight: 400 }}> (+{((results.costMult - 1) * 100).toFixed(0)}% redundancy)</span> : null}
+                </p>
+              </div>
             </div>
 
             <div style={{ marginTop: '20px', padding: '15px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155' }}>
               <p style={{ color: '#94a3b8', margin: '0 0 10px 0', fontSize: '0.75em', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Hardware Failures & Mitigation ({results.mitigation})
-                <Tooltip text="Goodput = fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead. Time inflation = 1/goodput. Hardware cost = chips × chip price × 1.64 (server overhead) × 1.23 (cluster networking) per Cottier et al. (2024), times any mitigation redundancy; excludes power, data center, and labor." />
+                <Tooltip text="Goodput = fraction of GPU-hours doing useful work after failures, downtime, lost work and checkpoint overhead. Time inflation = 1/goodput. Redundancy cost = extra hardware this mitigation requires (e.g. backup workers), already included in the Estimated Hardware Cost above." />
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', fontSize: '0.9em' }}>
                 <div><span style={{ color: '#94a3b8' }}>Goodput</span><br/>
@@ -1083,8 +1106,8 @@ function App() {
                   <strong style={{ color: '#e2e8f0' }}>{formatFlops(results.gpuHoursWasted).replace(' FLOP','')}</strong></div>
                 <div><span style={{ color: '#94a3b8' }}>Quality penalty</span><br/>
                   <strong style={{ color: '#e2e8f0' }}>{results.etaMit}%</strong></div>
-                <div><span style={{ color: '#94a3b8' }}>Hardware cost</span><br/>
-                  <strong style={{ color: '#e2e8f0' }}>{results.costUsd >= 1e9 ? `$${(results.costUsd / 1e9).toFixed(2)}B` : `$${(results.costUsd / 1e6).toFixed(1)}M`}{results.costMult > 1 ? ` (+${((results.costMult - 1) * 100).toFixed(0)}%)` : ''}</strong></div>
+                <div><span style={{ color: '#94a3b8' }}>Redundancy cost</span><br/>
+                  <strong style={{ color: '#e2e8f0' }}>{results.costMult > 1 ? `+${((results.costMult - 1) * 100).toFixed(0)}% hardware` : 'none'}</strong></div>
                 <div><span style={{ color: '#94a3b8' }}>GPU-mem ckpt</span><br/>
                   <strong style={{ color: results.gpuMemFeasible ? '#10b981' : '#f43f5e' }}>{results.gpuMemFeasible ? 'feasible' : 'no spare HBM'}</strong></div>
               </div>

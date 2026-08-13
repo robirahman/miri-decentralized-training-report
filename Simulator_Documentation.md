@@ -666,6 +666,8 @@ The combined multiplier is $1.64 \times 1.23 = 2.02\times$, meaning total system
 
 **Chip prices:** The simulator uses current sale prices (early 2026 estimates) rather than release-date prices depreciated over time. This avoids the need for an amortization model but means cost estimates reflect current market conditions, not historical acquisition cost.
 
+**Where applied:** Every cost figure the project reports uses these multipliers — `evasion_calculator.py`, `ccc_cost_analysis.py`, `compare_memory_limit.py`, the generated paper tables, and the web simulator (`CHIP_TO_SERVER` / `SERVER_TO_CLUSTER` in `App.tsx`). Where a mitigation strategy requires redundant hardware (e.g. backup workers), the reliability model's `cost_mult` multiplies on top: $C = P_{\text{chip}} N_{\text{chips}} f_{\text{server}} f_{\text{cluster}} \times \text{cost\_mult}$.
+
 ---
 
 ## 8. Maximum Training Run Duration
