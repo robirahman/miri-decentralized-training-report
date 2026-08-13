@@ -20,7 +20,6 @@ try:
 except (AttributeError, ValueError):
     pass
 
-sys.path.insert(0, "/mnt/chromeos/MyFiles/Documents/MIRI decentralized training report")
 from evasion_calculator import (
     straggler_factor, reliability_model, efficiency, alpha, compression_quality,
     replica_loss_multiplier, chinchilla_efficiency, chinchilla_loss,
