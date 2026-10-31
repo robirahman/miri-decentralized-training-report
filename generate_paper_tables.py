@@ -146,23 +146,39 @@ def best_at_nodes(cfg, n_nodes, bw, latency, target=None):
                         best_r, best_mode = r, mode
     return best_mode, best_r
 
-def find_min_nodes(cfg, target, bw, latency, max_n=100000):
-    """Binary search for the smallest n_nodes meeting target C_local."""
-    m1, r1 = best_at_nodes(cfg, 1, bw, latency, target=target)
-    if r1 and r1['c_local'] >= target:
-        return m1, r1
-    _, r_hi = best_at_nodes(cfg, max_n, bw, latency)
-    if not r_hi or r_hi['c_local'] < target:
-        return None, None
-    lo, hi = 2, max_n
-    while lo < hi:
-        mid = (lo + hi) // 2
-        _, r = best_at_nodes(cfg, mid, bw, latency)
+def node_grid(max_n, ratio=1.05):
+    """Geometric grid of node counts 1..max_n (consecutive integers while the step is < 1)."""
+    ns, n = [], 1
+    while n <= max_n:
+        ns.append(n)
+        n = max(n + 1, int(round(n * ratio)))
+    return ns
+
+def find_min_nodes(cfg, target, bw, latency, max_n=100000, ratio=1.05):
+    """Smallest n_nodes meeting target C_local.
+
+    Best achievable C_local is not monotone in n: the OT_MIN..OT_MAX overtraining bound in
+    best_at_nodes drops a model once n grows past its window, and the next feasible option
+    (often pipeline-parallel) may need many more nodes. So a binary search over n can land
+    above the true minimum (e.g. 16x H100 FP8, 1e25, 100 Mbps: feasible at 36-156 and from
+    312 nodes; bisection returned 312). Instead scan a geometric grid upward, then scan the
+    gap below the first feasible grid point linearly. Cost is proportional to n at fixed
+    cfg, so the first feasible n is the cheapest. A feasible window narrower than one grid
+    step can still be missed; lower `ratio` to tighten."""
+    grid = node_grid(max_n, ratio)
+    if grid[-1] != max_n:
+        grid.append(max_n)
+    prev = 0
+    for n in grid:
+        m, r = best_at_nodes(cfg, n, bw, latency, target=target)
         if r and r['c_local'] >= target:
-            hi = mid
-        else:
-            lo = mid + 1
-    return best_at_nodes(cfg, lo, bw, latency, target=target)
+            for k in range(prev + 1, n):
+                mk, rk = best_at_nodes(cfg, k, bw, latency, target=target)
+                if rk and rk['c_local'] >= target:
+                    return mk, rk
+            return m, r
+        prev = n
+    return None, None
 
 def cheapest_config(target, bw, latency):
     """Over all hardware configs, return the one with lowest cost that meets target.
