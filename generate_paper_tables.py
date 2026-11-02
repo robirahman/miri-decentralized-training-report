@@ -154,38 +154,58 @@ def node_grid(max_n, ratio=1.05):
         n = max(n + 1, int(round(n * ratio)))
     return ns
 
-def find_min_nodes(cfg, target, bw, latency, max_n=100000, ratio=1.05):
-    """Smallest n_nodes meeting target C_local.
+def _meets(cfg, n, bw, latency, target):
+    m, r = best_at_nodes(cfg, n, bw, latency, target=target)
+    return (m, r) if r and r['c_local'] >= target else (None, None)
 
-    Best achievable C_local is not monotone in n: the OT_MIN..OT_MAX overtraining bound in
-    best_at_nodes drops a model once n grows past its window, and the next feasible option
-    (often pipeline-parallel) may need many more nodes. So a binary search over n can land
-    above the true minimum (e.g. 16x H100 FP8, 1e25, 100 Mbps: feasible at 36-156 and from
-    312 nodes; bisection returned 312). Instead scan a geometric grid upward, then scan the
-    gap below the first feasible grid point linearly. Cost is proportional to n at fixed
-    cfg, so the first feasible n is the cheapest. A feasible window narrower than one grid
-    step can still be missed; lower `ratio` to tighten."""
-    grid = node_grid(max_n, ratio)
-    if grid[-1] != max_n:
-        grid.append(max_n)
-    prev = 0
-    for n in grid:
-        m, r = best_at_nodes(cfg, n, bw, latency, target=target)
-        if r and r['c_local'] >= target:
-            for k in range(prev + 1, n):
-                mk, rk = best_at_nodes(cfg, k, bw, latency, target=target)
-                if rk and rk['c_local'] >= target:
-                    return mk, rk
+def _first_on_grid(cfg, target, bw, latency, ratio=1.05, max_n=100000):
+    """First feasible point of a geometric grid of n: an upper bound, not the minimum."""
+    for n in node_grid(max_n, ratio) + [max_n]:
+        m, r = _meets(cfg, n, bw, latency, target)
+        if r:
             return m, r
-        prev = n
     return None, None
+
+def find_min_nodes(cfg, target, bw, latency, max_n=None, ratio=1.05):
+    """Smallest n_nodes meeting target C_local, checking every n up to a bound.
+
+    Feasibility is not monotone in n, not even for one fixed model and mode: the
+    OT_MIN..OT_MAX overtraining bound in best_at_nodes drops a model once n grows past its
+    window, and C_local itself can fall when n grows (e.g. 16x H100 FP8, Hier(4), 19 -> 20
+    nodes). A feasible window can be one node wide (16x H100 FP8, C_local of 2.7896e25 at
+    100 Mbps: feasible at 156 only, next at 1,040), so neither bisection nor a grid with a
+    gap scan is safe. With `max_n`, every n <= max_n is checked. Without it, a geometric
+    grid supplies the bound (the first feasible grid point), and a config feasible only
+    between grid points is reported infeasible; cheapest_config passes `max_n` to avoid
+    that."""
+    if max_n is None:
+        _, r = _first_on_grid(cfg, target, bw, latency, ratio)
+        max_n = r['n_nodes'] if r else 0
+    for n in range(1, max_n + 1):
+        m, r = _meets(cfg, n, bw, latency, target)
+        if r:
+            return m, r
+    return None, None
+
+def _cost_per_node(cfg):
+    """Cost of one node at cost_mult = 1; cost_usd is n_nodes x this x cost_mult (>= 1)."""
+    return cfg['gpu_count'] * cfg['gpu_cost_usd'] * CHIP_TO_SERVER * SERVER_TO_CLUSTER
 
 def cheapest_config(target, bw, latency):
     """Over all hardware configs, return the one with lowest cost that meets target.
-    On exact cost ties, prefer the config with higher C_quality."""
+    On exact cost ties, prefer the config with higher C_quality.
+
+    A grid pass over all configs gives an achievable cost; then each config is checked at
+    every n whose cost could match the cheapest found so far."""
+    bound = min((r['cost_usd'] for _, cfg in ALL_CFGS
+                 for r in [_first_on_grid(cfg, target, bw, latency)[1]] if r), default=None)
+    if bound is None:
+        return None, None, None
     best_name, best_mode, best_r = None, None, None
     for name, cfg in ALL_CFGS:
-        m, r = find_min_nodes(cfg, target, bw, latency)
+        cap = best_r['cost_usd'] if best_r else bound
+        n_cap = int(cap / _cost_per_node(cfg) * (1 + 1e-9))  # keep exact cost ties
+        m, r = find_min_nodes(cfg, target, bw, latency, max_n=min(100000, n_cap))
         if not r:
             continue
         if best_r is None or r['cost_usd'] < best_r['cost_usd']:

@@ -23,7 +23,32 @@ def test_find_min_nodes_returns_first_window():
     assert r["n_nodes"] == 36
 
 
+def test_find_min_nodes_finds_window_one_node_wide():
+    # 91B Hier(8) peaks at 156 nodes (99.4x overtraining) and passes 100x at 157; with the
+    # target set to that peak, 156 is the only feasible node count for hundreds of nodes.
+    target = g.best_at_nodes(CFG, 156, 100e6, 0.1)[1]["c_local"]
+    assert [feasible(n, target=target) for n in (155, 156, 157)] == [False, True, False]
+    _, r = g.find_min_nodes(CFG, target, 100e6, 0.1)
+    assert r["n_nodes"] == 156
+
+
+def test_find_min_nodes_matches_linear_scan_near_overtraining_edge():
+    # The answer must be the first feasible node count found by checking every n.
+    # 2.70e25 and 2.75e25 have windows several nodes wide (controls); 2.77e25 and 2.785e25
+    # have windows of two nodes and one node.
+    best = {n: g.best_at_nodes(CFG, n, 100e6, 0.1)[1]["c_local"] for n in range(1, 400)}
+    for target in (2.70e25, 2.75e25, 2.77e25, 2.785e25):
+        expected = next((n for n in range(1, 400) if best[n] >= target), None)
+        assert expected is not None, target
+        _, r = g.find_min_nodes(CFG, target, 100e6, 0.1)
+        assert r is not None and r["n_nodes"] == expected, target
+        assert r["c_local"] >= target
+        assert g.OT_MIN <= r["overtraining_ratio"] <= g.OT_MAX
+
+
 if __name__ == "__main__":
     test_feasible_set_has_a_hole()
     test_find_min_nodes_returns_first_window()
+    test_find_min_nodes_finds_window_one_node_wide()
+    test_find_min_nodes_matches_linear_scan_near_overtraining_edge()
     print("ok")
