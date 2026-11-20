@@ -766,11 +766,12 @@ def compute_scenario(config_name, n_nodes, compression=COMPRESSION,
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
-    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
-                                          loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
-    # Decompose: overtraining-only vs replica-only
+    # Decompose: overtraining-only vs replica-only. chi applies at any node count (a single
+    # node can over- or under-train too); the replica penalty needs more than one replica.
     chi = chinchilla_efficiency(params, total_tokens, c_throughput,
-                                        loss_multiplier=1.0) if n_nodes > 1 else 1.0
+                                        loss_multiplier=1.0)
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
+                                          loss_multiplier=loss_mult) if n_nodes > 1 else chi
     eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty + mitigation quality penalty into eta
@@ -1063,11 +1064,12 @@ def compute_moe_ep_scenario(config_name, n_nodes, total_params_b, active_params_
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, total_params_b, h=h_min) if n_nodes > 1 else 1.0
-    chi_full = chinchilla_efficiency(params_active, total_tokens, c_throughput,
-                                          loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
-    # Decompose: overtraining-only vs replica-only
+    # Decompose: overtraining-only vs replica-only. chi applies at any node count; the
+    # replica penalty needs more than one replica.
     chi = chinchilla_efficiency(params_active, total_tokens, c_throughput,
-                                        loss_multiplier=1.0) if n_nodes > 1 else 1.0
+                                        loss_multiplier=1.0)
+    chi_full = chinchilla_efficiency(params_active, total_tokens, c_throughput,
+                                          loss_multiplier=loss_mult) if n_nodes > 1 else chi
     eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty + mitigation quality penalty into eta
@@ -1860,11 +1862,12 @@ def compute_generic_scenario(cfg, n_nodes, compression=COMPRESSION,
 
     # Chinchilla-optimality + replica quality penalty
     loss_mult = replica_loss_multiplier(n_nodes, params_b, h=h_used) if n_nodes > 1 else 1.0
-    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
-                                          loss_multiplier=loss_mult) if n_nodes > 1 else 1.0
-    # Decompose: overtraining-only vs replica-only
+    # Decompose: overtraining-only vs replica-only. chi applies at any node count (a single
+    # node can over- or under-train too); the replica penalty needs more than one replica.
     chi = chinchilla_efficiency(params, total_tokens, c_throughput,
-                                        loss_multiplier=1.0) if n_nodes > 1 else 1.0
+                                        loss_multiplier=1.0)
+    chi_full = chinchilla_efficiency(params, total_tokens, c_throughput,
+                                          loss_multiplier=loss_mult) if n_nodes > 1 else chi
     eta_replica = chi_full / chi if chi > 0 else 0
 
     # Fold replica penalty + mitigation quality penalty into eta
