@@ -1980,41 +1980,133 @@ def _best_over_h(compute_fn, n, h_override_supported=True):
     return best
 
 
-def _binary_search_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=100000,
-                                        search_h=False):
-    """Binary search for minimum nodes where compute_fn(n)['c_quality'] >= target.
-    compute_fn(n) should return a result dict or None.
-    If search_h=True, tries multiple H values at each node count (Option B).
-    Returns the result dict at the minimum node count, or None if not achievable."""
-    def eval_fn(n):
-        if search_h:
-            return _best_over_h(compute_fn, n)
-        return compute_fn(n)
-
-    # Check if 2 nodes suffices (minimum for DiLoCo)
-    r = eval_fn(2)
-    if r is None:
-        # Try larger node counts — PP modes need more nodes
-        lo, hi = 3, max_nodes
-    elif r["c_quality"] >= target_c_quality:
-        return r
-    else:
-        lo, hi = 3, max_nodes
-
-    # Find upper bound first
-    r_hi = eval_fn(hi)
-    if r_hi is None or r_hi["c_quality"] < target_c_quality:
-        return None  # Not achievable even at max_nodes
-
+def _first_n_where(pred, lo, hi):
+    """Smallest n in [lo, hi] with pred(n) true, for pred that is false and then true as
+    n grows; None if pred(hi) is false."""
+    if lo > hi or not pred(hi):
+        return None
     while lo < hi:
         mid = (lo + hi) // 2
-        r = eval_fn(mid)
-        if r is not None and r["c_quality"] >= target_c_quality:
+        if pred(mid):
             hi = mid
         else:
             lo = mid + 1
+    return lo
 
-    result = eval_fn(lo)
+
+def _first_feasible_n(fn, target_c_quality, lo, hi):
+    """Smallest n in [lo, hi] with fn(n)['c_quality'] >= target, returned as fn(n); None if
+    there is none.
+
+    fn must stay in one mode over [lo, hi], so that eta(n) is non-increasing and
+    ceff(n) = c_quality / eta (the Chinchilla-equivalent compute, c_throughput * chi) is
+    non-decreasing in n: within a mode, H, the replica count and the sync tail only grow
+    with n, and so do the tokens processed, unless goodput falls faster than nodes are
+    added (only the synchronous and checkpoint_elastic mitigations do that, at very large
+    n). Then for every n in [a, b], c_quality(n) <= eta(a) * ceff(b), so an interval whose
+    bound falls short of the target holds no feasible n and is skipped; other intervals
+    are split until they are one node wide. c_quality itself need not be monotone: for a
+    fixed model it rises and then falls (the loss saturates while the replica penalty
+    keeps growing), and it dips when H steps up."""
+    memo = {}
+
+    def ev(n):
+        if n not in memo:
+            memo[n] = fn(n)
+        return memo[n]
+
+    def ok(r):
+        return r is not None and r["c_quality"] >= target_c_quality
+
+    def bound(ra, rb):
+        if ra is None or rb is None or rb["eta"] <= 0:
+            return math.inf
+        return ra["eta"] * rb["c_quality"] / rb["eta"]
+
+    if lo > hi:
+        return None
+    if ok(ev(lo)):
+        return ev(lo)
+    pts = [lo]
+    while pts[-1] < hi:
+        pts.append(min(hi, 2 * pts[-1]))
+    stack = [(pts[i], pts[i + 1]) for i in range(len(pts) - 2, -1, -1)]  # leftmost on top
+    while stack:
+        a, b = stack.pop()  # every n <= a is already known to miss the target
+        if b - a == 1:
+            if ok(ev(b)):
+                return ev(b)
+        elif bound(ev(a), ev(b)) >= target_c_quality * (1 - 1e-9):
+            m = (a + b) // 2
+            stack.append((m, b))
+            stack.append((a, m))
+    return None
+
+
+def _min_nodes_for_c_quality(compute_fn, target_c_quality, max_nodes=100000,
+                             search_h=False):
+    """Smallest n in [2, max_nodes] (2 is the minimum for DiLoCo) whose result reaches
+    target_c_quality; returns the result dict at that n, or None if no n does.
+    compute_fn(n) returns a result dict or None. With search_h, the result at each n is
+    _best_over_h's: the best of h_min and the lower H values _h_candidates adds.
+
+    C_quality is not monotone in n (see _first_feasible_n), so this does not bisect:
+    bisection, and a feasibility check at max_nodes, both drop models that reach the
+    target only in a middle range of n. Each mode regime and each H policy is searched
+    with _first_feasible_n, and the earliest node count found wins."""
+    memo = {}
+
+    def default(n):
+        if n not in memo:
+            memo[n] = compute_fn(n)
+        return memo[n]
+
+    # The mode can change once as n grows: hierarchical DiLoCo falls back to flat below
+    # two groups, and PP-Group DiLoCo returns None below two groups.
+    def regime(n):
+        r = default(n)
+        return None if r is None else ("n_groups" in r)
+
+    final = regime(max_nodes)
+    if final is None:
+        return None
+    start = 2 if regime(2) == final else _first_n_where(
+        lambda n: regime(n) == final, 2, max_nodes)
+    segments = [(2, start - 1)] if start > 2 and regime(2) is not None else []
+    segments.append((start, max_nodes))
+
+    best_n = None
+    for lo, hi in segments:
+        r = _first_feasible_n(default, target_c_quality, lo, hi)
+        if r is not None:
+            best_n = r["n_nodes"]
+            break
+
+    if search_h:
+        # Each lower H that _best_over_h tries is used once h_min exceeds it, and h_min only
+        # grows with n, so each is searched from where it starts, below the best n so far.
+        def h_min_at(n):
+            r = default(n)
+            return r.get("h_min", r.get("h_used", 1))
+
+        policies = [(lambda n, h=h: compute_fn(n, h_override=h), h)
+                    for h in (10, 30, 50, 100, 200)]
+        policies.append((lambda n: compute_fn(n, h_override=max(2, h_min_at(n) // 2)), 60))
+        try:
+            for fn, h_below in policies:
+                hi = best_n - 1 if best_n is not None else max_nodes
+                first = _first_n_where(lambda n: h_min_at(n) > h_below, 2, hi)
+                if first is None:
+                    continue
+                r = _first_feasible_n(fn, target_c_quality, first, hi)
+                if r is not None:
+                    best_n = r["n_nodes"]
+        except TypeError:
+            pass  # compute_fn takes no h_override: h_min only, as in _best_over_h
+
+    if best_n is None:
+        return None
+    result = _best_over_h(compute_fn, best_n) if search_h else default(best_n)
     if result is not None and result["c_quality"] >= target_c_quality:
         return result
     return None
@@ -2065,7 +2157,7 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
                 h_override=h_override,
                 straggler_mode=straggler_mode, error_feedback=error_feedback)
 
-        update_best(_binary_search_nodes_for_c_quality(
+        update_best(_min_nodes_for_c_quality(
             flat_fn, target_c_quality, search_h=True))
 
     # --- Hierarchical DiLoCo at various model sizes (WAN bandwidth for regional) ---
@@ -2087,7 +2179,7 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
                     scenario=scenario, cfg=cfg, target_params_b=pb,
                     straggler_mode=straggler_mode, error_feedback=error_feedback)
 
-            update_best(_binary_search_nodes_for_c_quality(hier_fn, target_c_quality))
+            update_best(_min_nodes_for_c_quality(hier_fn, target_c_quality))
 
     # --- PP-Group DiLoCo at larger model sizes (WAN bandwidth for PP) ---
     # Note: PP doesn't support h_override yet; search_h=False
@@ -2109,7 +2201,7 @@ def find_optimal_config_for_target(cfg, target_c_quality, compression=COMPRESSIO
                     scenario=scenario, cfg=cfg,
                     straggler_mode=straggler_mode, error_feedback=error_feedback)
 
-            update_best(_binary_search_nodes_for_c_quality(pp_fn, target_c_quality))
+            update_best(_min_nodes_for_c_quality(pp_fn, target_c_quality))
 
     return best
 
