@@ -164,12 +164,10 @@ def compute(cfg, n_nodes, compression=COMPRESSION, scenario="expected"):
     chinchilla_tokens = CHINCHILLA_TOKENS_PER_PARAM * params
     overtraining_ratio = total_tokens / chinchilla_tokens
 
-    # Chinchilla efficiency (overtraining penalty only, no replica)
-    if n_nodes > 1:
-        eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
-                                         loss_multiplier=1.0)
-    else:
-        eta_chin = 1.0
+    # Chinchilla efficiency (overtraining penalty only, no replica); applies at any node
+    # count, since a single node can over- or under-train too
+    eta_chin = chinchilla_efficiency(params, total_tokens, c_actual,
+                                     loss_multiplier=1.0)
     c_quality = c_local * eta_chin
 
     # System acquisition cost: chips × Cottier et al. (2024) server/cluster
